@@ -74,6 +74,25 @@ void logDrainThreadFunc() {
     }
 }
 
+// Set main program core affinity
+// Sets core affinity (requires root on Linux)
+// Returns true on success, false on failure (logs warning but continues)
+bool setMainCpuAffinity(int core_id = 0) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core_id, &cpuset);
+
+    int ret = sched_setaffinity(0, sizeof(cpuset), &cpuset);
+    if (ret != 0) {
+        // Not fatal - may not have CAP_SYS_NICE or running as non-root
+        std::cerr << "[Main] Warning: Could not set CPU affinity to core "
+                  << core_id << " (error " << ret << ")" << std::endl;
+        return false;
+    }
+    std::cout << "[Main] Main thread set CPU affinity to core " << core_id << std::endl;
+    return true;
+}
+
 void listTargets() {
     std::cout << "════════════════════════════════════════════════════════\n"
               << "  Scanning for Diretta Targets...\n"
@@ -92,6 +111,11 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
 
     config.name = "Diretta Renderer";
     config.port = 0;
+    config.syncCore = -1;
+    config.syncPrio = 80;
+    config.audioCore = -1;
+    config.audioPrio = 70;
+    config.otherCore = -1;
     config.gaplessEnabled = true;
 
     for (int i = 1; i < argc; i++) {
@@ -103,6 +127,21 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
             config.port = std::atoi(argv[++i]);
         }
+        else if (arg == "--syncCore" && i + 1 < argc) {
+            config.syncCore = std::atoi(argv[++i]);
+        }
+        else if (arg == "--otherCore" && i + 1 < argc) {
+            config.otherCore = std::atoi(argv[++i]);
+        }
+        else if (arg == "--audioCore" && i + 1 < argc) {
+            config.audioCore = std::atoi(argv[++i]);
+        }        
+        else if (arg == "--audioPrio" && i + 1 < argc) {
+            config.audioPrio = std::atoi(argv[++i]);
+        } 
+        else if (arg == "--syncPrio" && i + 1 < argc) {
+            config.syncPrio = std::atoi(argv[++i]);
+        } 
         else if (arg == "--uuid" && i + 1 < argc) {
             config.uuid = argv[++i];
         }
@@ -178,6 +217,11 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
                       << "Options:\n"
                       << "  --name, -n <name>     Renderer name (default: Diretta Renderer)\n"
                       << "  --port, -p <port>     UPnP port (default: auto)\n"
+                      << "  --syncCore <core>     Cpu core for DirettaSync thread (default: cpuOther)\n"
+                      << "  --audioCore <core>    Cpu core for DirettaAudio thread (default: cpuOther)\n"
+                      << "  --syncPrio <core>     RT-prio for DirettaSync thread (default: cpuOther)\n"
+                      << "  --audioPrio <core>    RT-prio for DirettaAudio thread (default: cpuOther)\n"
+                      << "  --otherCore <core>    Cpu core for other threads\n"
                       << "  --uuid <uuid>         Device UUID (default: auto-generated)\n"
                       << "  --no-gapless          Disable gapless playback\n"
                       << "  --target, -t <index>  Select Diretta target by index (1, 2, 3...)\n"
@@ -229,6 +273,11 @@ int main(int argc, char* argv[]) {
 
     DirettaRenderer::Config config = parseArguments(argc, argv);
 
+    // F2: Set cpu affinity
+    if (config.otherCore >= 0) {
+        setMainCpuAffinity(config.otherCore);
+    }
+
     // Initialize async logging ring buffer (A3 optimization)
     // Only active in verbose mode to avoid overhead in production
     if (g_verbose) {
@@ -242,6 +291,21 @@ int main(int argc, char* argv[]) {
     std::cout << "  Gapless:  " << (config.gaplessEnabled ? "enabled" : "disabled") << std::endl;
     if (!config.networkInterface.empty()) {
         std::cout << "  Network:  " << config.networkInterface << std::endl;
+    }
+    if (config.syncCore >= 0) {
+        std::cout << "  syncCore:  " << std::to_string(config.syncCore) << std::endl;
+    }
+    if (config.audioCore >= 0) {
+        std::cout << "  audioCore:  " << std::to_string(config.audioCore) << std::endl;
+    }
+    if (config.otherCore >= 0) {
+        std::cout << "  otherCore:  " << std::to_string(config.otherCore) << std::endl;
+    }
+    if (config.syncPrio >= 0) {
+        std::cout << "  syncPrio:  " << std::to_string(config.syncPrio) << std::endl;
+    }
+    if (config.audioPrio >= 0) {
+        std::cout << "  audioPrio:  " << std::to_string(config.audioPrio) << std::endl;
     }
     std::cout << "  UUID:     " << config.uuid << std::endl;
     std::cout << std::endl;

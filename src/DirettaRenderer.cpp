@@ -21,6 +21,52 @@
 // DEBUG_LOG kept as alias for backward compatibility within this file
 #define DEBUG_LOG(x) LOG_DEBUG(x)
 
+namespace {
+// F1: Worker thread priority elevation for reduced jitter
+// Sets SCHED_FIFO real-time priority (requires root on Linux)
+// Returns true on success, false on failure (logs warning but continues)
+bool setRealtimePriority(int priority = 50) {
+    struct sched_param param;
+    param.sched_priority = priority;
+
+    int ret = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+    if (ret != 0) {
+        // Not fatal - may not have CAP_SYS_NICE or running as non-root
+        if (g_verbose) {
+            std::cerr << "[Audio Thread] Warning: Could not set SCHED_FIFO priority "
+                      << priority << " (error " << ret << ")" << std::endl;
+        }    
+        return false;
+    }
+    if (g_verbose) {
+        std::cout << "[Audio Thread] Audio thread set to SCHED_FIFO priority " << priority << std::endl;
+    }
+    return true;
+}
+// F2: Audio thread core affinity
+// Sets core affinity (requires root on Linux)
+// Returns true on success, false on failure (logs warning but continues)
+bool setCpuAffinity(int audio_core_id = 3) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(audio_core_id, &cpuset);
+
+    int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    if (ret != 0) {
+        // Not fatal - may not have CAP_SYS_NICE or running as non-root
+        if (g_verbose) {
+            std::cerr << "[Audio Thread] Warning: Could not set CPU affinity to core "
+                      << audio_core_id << " (error " << ret << ")" << std::endl;
+        }
+        return false;
+    }
+    if (g_verbose) {
+        std::cout << "[Audio Thread] Audio thread set CPU affinity to core " << audio_core_id << std::endl;
+    }
+    return true;
+}
+}
+
 //=============================================================================
 // Hybrid Flow Control Constants
 //=============================================================================
@@ -131,7 +177,8 @@ bool DirettaRenderer::start() {
 
         m_direttaSync = std::make_unique<DirettaSync>();
         m_direttaSync->setTargetIndex(m_config.targetIndex);
-
+        m_direttaSync->setSyncCore(m_config.syncCore);
+        m_direttaSync->setSyncPrio(m_config.syncPrio);
         if (!m_direttaSync->verifyTargetAvailable()) {
             std::cerr << "[DirettaRenderer] No Diretta Target found!" << std::endl;
             std::cerr << "[DirettaRenderer] Run: ./bin/DirettaRendererUPnP --list-targets" << std::endl;
@@ -670,6 +717,14 @@ void DirettaRenderer::upnpThreadFunc() {
 
 void DirettaRenderer::audioThreadFunc() {
     DEBUG_LOG("[Audio Thread] Started");
+    // F1: Elevate worker thread priority for reduced jitter
+    // SCHED_FIFO priority 50 (mid-range real-time) - requires root/CAP_SYS_NICE
+    setRealtimePriority(m_config.audioPrio);
+
+    // F2: Set cpu affinity
+    if ( m_config.audioCore >= 0 ) {
+        setCpuAffinity(m_config.audioCore);
+    }
 
     // Buffer-level flow control thresholds (like MPD's Delay() approach)
     constexpr float BUFFER_HIGH_THRESHOLD = 0.5f;  // Throttle when >50% full

@@ -450,6 +450,8 @@ public:
     //=========================================================================
 
     void setTargetIndex(int index) { m_targetIndex = index; }
+    void setSyncCore(int core) { m_syncCore = core; }
+    void setSyncPrio(int prio) { m_syncPrio = prio; }
     void setMTU(uint32_t mtu) { m_mtuOverride = mtu; }
     bool verifyTargetAvailable();
     static void listTargets();
@@ -511,6 +513,8 @@ private:
     // Target
     ACQUA::IPAddress m_targetAddress;
     int m_targetIndex = -1;
+    int m_syncCore = -1;
+    int m_syncPrio = 80;
     uint32_t m_mtuOverride = 0;
     uint32_t m_effectiveMTU = 1500;
 

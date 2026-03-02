@@ -51,6 +51,29 @@ bool setRealtimePriority(int priority = 50) {
     return true;
 }
 
+// F2: Worker thread core affinity
+// Sets core affinity (requires root on Linux)
+// Returns true on success, false on failure (logs warning but continues)
+bool setCpuAffinity(int audio_core_id = 3) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(audio_core_id, &cpuset);
+
+    int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    if (ret != 0) {
+        // Not fatal - may not have CAP_SYS_NICE or running as non-root
+        if (g_verbose) {		
+            std::cerr << "[DirettaSync] Warning: Could not set CPU affinity to core "
+                      << audio_core_id << " (error " << ret << ")" << std::endl;
+        }				  
+        return false;
+    }
+    if (g_verbose) {
+        std::cout << "[DirettaSync] Worker thread set CPU affinity to core " << audio_core_id << std::endl;
+	}
+    return true;
+}
+
 class RingAccessGuard {
 public:
     RingAccessGuard(std::atomic<int>& users, const std::atomic<bool>& reconfiguring)
@@ -1662,9 +1685,14 @@ bool DirettaSync::startSyncWorker() {
 
     m_workerThread = std::thread([this]() {
         // F1: Elevate worker thread priority for reduced jitter
-        // SCHED_FIFO priority 50 (mid-range real-time) - requires root/CAP_SYS_NICE
-        setRealtimePriority(50);
+        // SCHED_FIFO priority 80 (mid-range real-time) - requires root/CAP_SYS_NICE
+        setRealtimePriority(m_syncPrio);
 
+        // F2: Set cpu affinity
+        if ( m_syncCore >= 0 ) {
+            setCpuAffinity(m_syncCore);
+        }
+        
         while (m_running.load(std::memory_order_acquire)) {
             if (!syncWorker()) {
                 std::this_thread::sleep_for(std::chrono::microseconds(100));

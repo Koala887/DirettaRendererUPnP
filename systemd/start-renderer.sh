@@ -9,6 +9,11 @@ TARGET="${TARGET:-1}"
 PORT="${PORT:-4005}"
 GAPLESS="${GAPLESS:-}"
 VERBOSE="${VERBOSE:-}"
+OTHER_CORE="${OTHER_CORE:-}"
+SYNC_CORE="${SYNC_CORE:-}"
+AUDIO_CORE="${AUDIO_CORE:-}"
+SYNC_PRIO="${SYNC_PRIO:-}"
+AUDIO_PRIO="${AUDIO_PRIO:-}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
 THREAD_MODE="${THREAD_MODE:-}"
 CYCLE_TIME="${CYCLE_TIME:-}"
@@ -80,6 +85,26 @@ fi
 
 if [ -n "$MTU_OVERRIDE" ]; then
     CMD="$CMD --mtu $MTU_OVERRIDE"
+fi
+
+if [ -n "$OTHER_CORE" ]; then
+    CMD="$CMD --otherCore $OTHER_CORE"
+fi
+
+if [ -n "$SYNC_CORE" ]; then
+    CMD="$CMD --syncCore $SYNC_CORE"
+fi
+
+if [ -n "$AUDIO_CORE" ]; then
+    CMD="$CMD --audioCore $AUDIO_CORE"
+fi
+
+if [ -n "$SYNC_PRIO" ]; then
+    CMD="$CMD --syncPrio $SYNC_PRIO"
+fi
+
+if [ -n "$AUDIO_PRIO" ]; then
+    CMD="$CMD --audioPrio $AUDIO_PRIO"
 fi
 
 # Log the command being executed
