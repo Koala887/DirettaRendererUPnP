@@ -1685,12 +1685,12 @@ bool DirettaSync::startSyncWorker() {
 
     m_workerThread = std::thread([this]() {
         // F1: Elevate worker thread priority for reduced jitter
-        // SCHED_FIFO priority 80 (mid-range real-time) - requires root/CAP_SYS_NICE
-        setRealtimePriority(m_syncPrio);
+        // SCHED_FIFO priority 50 (mid-range real-time) - requires root/CAP_SYS_NICE
+        setRealtimePriority(g_syncPriority);
 
         // F2: Set cpu affinity
-        if ( m_syncCore >= 0 ) {
-            setCpuAffinity(m_syncCore);
+        if ( g_syncCore >= 0 ) {
+            setCpuAffinity(g_syncCore);
         }
         
         while (m_running.load(std::memory_order_acquire)) {

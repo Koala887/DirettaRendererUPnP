@@ -40,12 +40,10 @@ public:
         int cycleMinTime = -1;     // Min cycle time in µs (default: unused, random mode only)
         std::string transferMode;  // Transfer mode: auto|varmax|varauto|fixauto|random
         int mtu = -1;             // MTU override in bytes (default: auto-detect)
-        int targetProfileLimitTime = -1;  // 0=SelfProfile, >0=TargetProfile limit in µs (default: 200)
-        int syncCore;
-        int syncPrio;
+        int targetProfileLimitTime = -1;  // 0=SelfProfile (stable, default), >0=TargetProfile limit in µs (experimental)
         int audioCore;
         int audioPrio;
-        int otherCore;
+		
         Config();
     };
 

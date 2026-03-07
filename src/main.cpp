@@ -14,7 +14,7 @@
 #include <chrono>
 #include <iomanip>
 
-#define RENDERER_VERSION "2.0.6"
+#define RENDERER_VERSION "2.1.0"
 #define RENDERER_BUILD_DATE __DATE__
 #define RENDERER_BUILD_TIME __TIME__
 
@@ -54,6 +54,9 @@ void statsSignalHandler(int /*signal*/) {
 }
 
 bool g_verbose = false;
+int g_syncPriority = 50;
+int g_syncCore = -1;
+int otherCore = -1;
 LogLevel g_logLevel = LogLevel::INFO;
 
 void logDrainThreadFunc() {
@@ -111,11 +114,9 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
 
     config.name = "Diretta Renderer";
     config.port = 0;
-    config.syncCore = -1;
-    config.syncPrio = 80;
     config.audioCore = -1;
-    config.audioPrio = 70;
-    config.otherCore = -1;
+    config.audioPrio = 0;
+    otherCore = -1;
     config.gaplessEnabled = true;
 
     for (int i = 1; i < argc; i++) {
@@ -127,20 +128,28 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
             config.port = std::atoi(argv[++i]);
         }
-        else if (arg == "--syncCore" && i + 1 < argc) {
-            config.syncCore = std::atoi(argv[++i]);
+        else if (arg == "--sync-core" && i + 1 < argc) {
+            g_syncCore = std::atoi(argv[++i]);
         }
-        else if (arg == "--otherCore" && i + 1 < argc) {
-            config.otherCore = std::atoi(argv[++i]);
+        else if (arg == "--other-core" && i + 1 < argc) {
+            otherCore = std::atoi(argv[++i]);
         }
-        else if (arg == "--audioCore" && i + 1 < argc) {
+        else if (arg == "--audio-core" && i + 1 < argc) {
             config.audioCore = std::atoi(argv[++i]);
         }        
-        else if (arg == "--audioPrio" && i + 1 < argc) {
+        else if (arg == "--audio-rt-prio" && i + 1 < argc) {
             config.audioPrio = std::atoi(argv[++i]);
+            if (config.audioPrio < 1 || config.audioPrio > 99) {
+                std::cerr << "Warning: audio-rt-prio should be between 1-99" << std::endl;
+                config.audioPrio = std::max(1, std::min(99, config.audioPrio));
+            }
         } 
-        else if (arg == "--syncPrio" && i + 1 < argc) {
-            config.syncPrio = std::atoi(argv[++i]);
+        else if (arg == "--sync-rt-prio" && i + 1 < argc) {
+            g_syncPriority = std::atoi(argv[++i]);
+            if (g_syncPriority < 1 || g_syncPriority > 99) {
+                std::cerr << "Warning: sync-rt-prio should be between 1-99" << std::endl;
+                g_syncPriority = std::max(1, std::min(99, g_syncPriority));
+            }			
         } 
         else if (arg == "--uuid" && i + 1 < argc) {
             config.uuid = argv[++i];
@@ -211,17 +220,19 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
         else if (arg == "--mtu" && i + 1 < argc) {
             config.mtu = std::atoi(argv[++i]);
         }
+        else if (arg == "--rt-priority" && i + 1 < argc) {
+            g_rtPriority = std::atoi(argv[++i]);
+            if (g_rtPriority < 1 || g_rtPriority > 99) {
+                std::cerr << "Warning: rt-priority should be between 1-99" << std::endl;
+                g_rtPriority = std::max(1, std::min(99, g_rtPriority));
+            }
+        }
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Diretta UPnP Renderer (Simplified Architecture)\n\n"
                       << "Usage: " << argv[0] << " [options]\n\n"
                       << "Options:\n"
                       << "  --name, -n <name>     Renderer name (default: Diretta Renderer)\n"
                       << "  --port, -p <port>     UPnP port (default: auto)\n"
-                      << "  --syncCore <core>     Cpu core for DirettaSync thread (default: cpuOther)\n"
-                      << "  --audioCore <core>    Cpu core for DirettaAudio thread (default: cpuOther)\n"
-                      << "  --syncPrio <core>     RT-prio for DirettaSync thread (default: cpuOther)\n"
-                      << "  --audioPrio <core>    RT-prio for DirettaAudio thread (default: cpuOther)\n"
-                      << "  --otherCore <core>    Cpu core for other threads\n"
                       << "  --uuid <uuid>         Device UUID (default: auto-generated)\n"
                       << "  --no-gapless          Disable gapless playback\n"
                       << "  --target, -t <index>  Select Diretta target by index (1, 2, 3...)\n"
@@ -241,8 +252,13 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
                       << "  --cycle-min-time <us>      Min cycle time in microseconds (random mode only)\n"
                       << "  --info-cycle <us>          Info packet cycle in microseconds (default: 100000)\n"
                       << "  --transfer-mode <mode>     Transfer mode: auto, varmax, varauto, fixauto, random\n"
-                      << "  --target-profile-limit <us> Target profile limit time (0=self, default: 200)\n"
+                      << "  --target-profile-limit <us> Target profile limit time (0=SelfProfile (stable), default: 0, >0=experimental)\n"
                       << "  --mtu <bytes>              MTU override (default: auto-detect)\n"
+                      << "  --sync-core <core>         Cpu core for DirettaSync thread\n"
+                      << "  --audio-core <core>        Cpu core for DirettaAudio thread\n"
+                      << "  --other-core <core>        Cpu core for other threads\n"
+                      << "  --sync-rt-prio <1-99>      SCHED_FIFO real-time priority for DirettaSync thread (default: 50)\n"
+                      << "  --audio-rt-prio <1-99>     SCHED_FIFO real-time priority for DirettaAudio thread\n"
                       << std::endl;
             exit(0);
         }
@@ -274,8 +290,8 @@ int main(int argc, char* argv[]) {
     DirettaRenderer::Config config = parseArguments(argc, argv);
 
     // F2: Set cpu affinity
-    if (config.otherCore >= 0) {
-        setMainCpuAffinity(config.otherCore);
+    if (otherCore >= 0) {
+        setMainCpuAffinity(otherCore);
     }
 
     // Initialize async logging ring buffer (A3 optimization)
@@ -292,19 +308,19 @@ int main(int argc, char* argv[]) {
     if (!config.networkInterface.empty()) {
         std::cout << "  Network:  " << config.networkInterface << std::endl;
     }
-    if (config.syncCore >= 0) {
-        std::cout << "  syncCore:  " << std::to_string(config.syncCore) << std::endl;
+    if (g_syncCore >= 0) {
+        std::cout << "  syncCore:  " << std::to_string(g_syncCore) << std::endl;
     }
     if (config.audioCore >= 0) {
         std::cout << "  audioCore:  " << std::to_string(config.audioCore) << std::endl;
     }
-    if (config.otherCore >= 0) {
-        std::cout << "  otherCore:  " << std::to_string(config.otherCore) << std::endl;
+    if (otherCore >= 0) {
+        std::cout << "  otherCore:  " << std::to_string(otherCore) << std::endl;
     }
-    if (config.syncPrio >= 0) {
-        std::cout << "  syncPrio:  " << std::to_string(config.syncPrio) << std::endl;
+    if (g_syncPriority >= 0) {
+        std::cout << "  syncPrio:  " << std::to_string(g_syncPriority) << std::endl;
     }
-    if (config.audioPrio >= 0) {
+    if (config.audioPrio >= 1) {
         std::cout << "  audioPrio:  " << std::to_string(config.audioPrio) << std::endl;
     }
     std::cout << "  UUID:     " << config.uuid << std::endl;

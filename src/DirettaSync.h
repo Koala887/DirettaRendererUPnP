@@ -105,6 +105,8 @@ extern LogRing* g_logRing;
 #include "LogLevel.h"
 
 extern bool g_verbose;
+extern int g_syncPriority;
+extern int g_syncCore;
 
 #ifdef NOLOG
 // Production build: compile out all verbose logging for zero overhead
@@ -297,7 +299,7 @@ struct DirettaConfig {
     unsigned int mtuFallback = 1500;
     unsigned int infoCycle = 100000;  // Info packet cycle in µs (SDK default: 100ms)
     unsigned int cycleMinTime = 0;   // 0 = unused (only for random transfer mode)
-    unsigned int targetProfileLimitTime = 200;  // 0=SelfProfile, other=TargetProfile(LimitCycleTime µs)
+    unsigned int targetProfileLimitTime = 0;  // 0=SelfProfile (stable), >0=TargetProfile (experimental, LimitCycleTime µs)
     unsigned int dacStabilizationMs = DirettaBuffer::DAC_STABILIZATION_MS;
     unsigned int onlineWaitMs = DirettaBuffer::ONLINE_WAIT_MS;
     unsigned int formatSwitchDelayMs = DirettaBuffer::FORMAT_SWITCH_DELAY_MS;
@@ -450,8 +452,6 @@ public:
     //=========================================================================
 
     void setTargetIndex(int index) { m_targetIndex = index; }
-    void setSyncCore(int core) { m_syncCore = core; }
-    void setSyncPrio(int prio) { m_syncPrio = prio; }
     void setMTU(uint32_t mtu) { m_mtuOverride = mtu; }
     bool verifyTargetAvailable();
     static void listTargets();
@@ -513,8 +513,6 @@ private:
     // Target
     ACQUA::IPAddress m_targetAddress;
     int m_targetIndex = -1;
-    int m_syncCore = -1;
-    int m_syncPrio = 80;
     uint32_t m_mtuOverride = 0;
     uint32_t m_effectiveMTU = 1500;
 

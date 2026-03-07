@@ -9,11 +9,6 @@ TARGET="${TARGET:-1}"
 PORT="${PORT:-4005}"
 GAPLESS="${GAPLESS:-}"
 VERBOSE="${VERBOSE:-}"
-OTHER_CORE="${OTHER_CORE:-}"
-SYNC_CORE="${SYNC_CORE:-}"
-AUDIO_CORE="${AUDIO_CORE:-}"
-SYNC_PRIO="${SYNC_PRIO:-}"
-AUDIO_PRIO="${AUDIO_PRIO:-}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
 THREAD_MODE="${THREAD_MODE:-}"
 CYCLE_TIME="${CYCLE_TIME:-}"
@@ -22,6 +17,16 @@ INFO_CYCLE="${INFO_CYCLE:-}"
 TRANSFER_MODE="${TRANSFER_MODE:-}"
 TARGET_PROFILE_LIMIT="${TARGET_PROFILE_LIMIT:-}"
 MTU_OVERRIDE="${MTU_OVERRIDE:-}"
+
+# Process priority defaults
+NICE_LEVEL="${NICE_LEVEL:--10}"
+IO_SCHED_CLASS="${IO_SCHED_CLASS:-realtime}"
+IO_SCHED_PRIORITY="${IO_SCHED_PRIORITY:-0}"
+OTHER_CORE="${OTHER_CORE:-}"
+SYNC_CORE="${SYNC_CORE:-}"
+AUDIO_CORE="${AUDIO_CORE:-}"
+SYNC_PRIO="${SYNC_PRIO:-50}"
+AUDIO_PRIO="${AUDIO_PRIO:-}"
 
 RENDERER_BIN="/opt/diretta-renderer-upnp/DirettaRendererUPnP"
 
@@ -87,24 +92,52 @@ if [ -n "$MTU_OVERRIDE" ]; then
     CMD="$CMD --mtu $MTU_OVERRIDE"
 fi
 
+# Build exec prefix for process priority
+EXEC_PREFIX=""
+
+# Apply nice level
+if [ -n "$NICE_LEVEL" ] && [ "$NICE_LEVEL" != "0" ]; then
+    EXEC_PREFIX="nice -n $NICE_LEVEL"
+fi
+
+# Apply I/O scheduling
+if [ -n "$IO_SCHED_CLASS" ]; then
+    # Map class name to ionice class number
+    case "$IO_SCHED_CLASS" in
+        realtime|1)  IONICE_CLASS=1 ;;
+        best-effort|2) IONICE_CLASS=2 ;;
+        idle|3)      IONICE_CLASS=3 ;;
+        *)           IONICE_CLASS="" ;;
+    esac
+
+    if [ -n "$IONICE_CLASS" ]; then
+        if [ "$IONICE_CLASS" = "3" ]; then
+            # idle class has no priority level
+            EXEC_PREFIX="ionice -c $IONICE_CLASS $EXEC_PREFIX"
+        else
+            EXEC_PREFIX="ionice -c $IONICE_CLASS -n ${IO_SCHED_PRIORITY:-0} $EXEC_PREFIX"
+        fi
+    fi
+fi
+
 if [ -n "$OTHER_CORE" ]; then
-    CMD="$CMD --otherCore $OTHER_CORE"
+    CMD="$CMD --other-core $OTHER_CORE"
 fi
 
 if [ -n "$SYNC_CORE" ]; then
-    CMD="$CMD --syncCore $SYNC_CORE"
+    CMD="$CMD --sync-core $SYNC_CORE"
 fi
 
 if [ -n "$AUDIO_CORE" ]; then
-    CMD="$CMD --audioCore $AUDIO_CORE"
+    CMD="$CMD --audio-core $AUDIO_CORE"
 fi
 
 if [ -n "$SYNC_PRIO" ]; then
-    CMD="$CMD --syncPrio $SYNC_PRIO"
+    CMD="$CMD --sync-rt-prio $SYNC_PRIO"
 fi
 
 if [ -n "$AUDIO_PRIO" ]; then
-    CMD="$CMD --audioPrio $AUDIO_PRIO"
+    CMD="$CMD --audio-rt-prio $AUDIO_PRIO"
 fi
 
 # Log the command being executed
@@ -115,12 +148,19 @@ echo ""
 echo "Configuration:"
 echo "  Target:           $TARGET"
 echo "  Network Interface: ${NETWORK_INTERFACE:-auto-detect}"
+echo "  Nice level:        $NICE_LEVEL"
+echo "  I/O scheduling:    $IO_SCHED_CLASS (priority $IO_SCHED_PRIORITY)"
+echo "  Sync Core:         $SYNC_CORE"
+echo "  Audio Core:        $AUDIO_CORE"
+echo "  Other Core:        $OTHER_CORE"
+echo "  Sync RT priority:  $SYNC_PRIO (SCHED_FIFO)"
+echo "  Audio RT priority: $AUDIO_PRIO (SCHED_FIFO)"
 echo ""
 echo "Command:"
-echo "  $CMD"
+echo "  $EXEC_PREFIX $CMD"
 echo ""
 echo "════════════════════════════════════════════════════════"
 echo ""
 
-# Execute
-exec $CMD
+# Execute with priority settings
+exec $EXEC_PREFIX $CMD
