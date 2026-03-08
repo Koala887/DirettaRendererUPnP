@@ -94,8 +94,8 @@
                 {
                     "key": "SYNC_PRIO",
                     "type": "number",
-                    "label": "Sync RT Priority (SCHED_FIFO)",
-                    "description": "Real-time priority for the sync thread (1-99). Higher = more priority. Default: 50",
+                    "label": "DirettaSync RT Priority (SCHED_FIFO)",
+                    "description": "Real-time priority for the DirettaSync thread (1-99). Higher = more priority. Default: 50",
                     "default": "50",
                     "min": 1,
                     "max": 99
@@ -103,8 +103,8 @@
                 {
                     "key": "AUDIO_PRIO",
                     "type": "number",
-                    "label": "Audio RT Priority (SCHED_FIFO)",
-                    "description": "Real-time priority for the audio thread (0-99). Higher = more priority (0 = off). Default: 0",
+                    "label": "AudioEngine RT Priority (SCHED_FIFO)",
+                    "description": "Real-time priority for the AudioEngine thread (0-99). Higher = more priority (0 = off). Default: 0",
                     "default": "0",
                     "min": 0,
                     "max": 99
@@ -112,7 +112,7 @@
                 {
                     "key": "SYNC_CORE",
                     "type": "number",
-                    "label": "Sync Thread Core affinity",
+                    "label": "DirettaSync core affinity",
                     "description": "Set CPU core affinity for the DirettaSync thread.",
                     "default": "-1",
                     "min": -1,
@@ -121,7 +121,7 @@
                 {
                     "key": "AUDIO_CORE",
                     "type": "number",
-                    "label": "Audio Thread Core affinity",
+                    "label": "AudioEngine core affinity",
                     "description": "Set CPU core affinity for the AudioEngine thread",
                     "default": "-1",
                     "min": -1,

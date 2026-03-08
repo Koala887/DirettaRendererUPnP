@@ -220,13 +220,6 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
         else if (arg == "--mtu" && i + 1 < argc) {
             config.mtu = std::atoi(argv[++i]);
         }
-        else if (arg == "--rt-priority" && i + 1 < argc) {
-            g_rtPriority = std::atoi(argv[++i]);
-            if (g_rtPriority < 1 || g_rtPriority > 99) {
-                std::cerr << "Warning: rt-priority should be between 1-99" << std::endl;
-                g_rtPriority = std::max(1, std::min(99, g_rtPriority));
-            }
-        }
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Diretta UPnP Renderer (Simplified Architecture)\n\n"
                       << "Usage: " << argv[0] << " [options]\n\n"
@@ -255,10 +248,10 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
                       << "  --target-profile-limit <us> Target profile limit time (0=SelfProfile (stable), default: 0, >0=experimental)\n"
                       << "  --mtu <bytes>              MTU override (default: auto-detect)\n"
                       << "  --sync-core <core>         Cpu core for DirettaSync thread\n"
-                      << "  --audio-core <core>        Cpu core for DirettaAudio thread\n"
+                      << "  --audio-core <core>        Cpu core for AudioEngine thread\n"
                       << "  --other-core <core>        Cpu core for other threads\n"
                       << "  --sync-rt-prio <1-99>      SCHED_FIFO real-time priority for DirettaSync thread (default: 50)\n"
-                      << "  --audio-rt-prio <1-99>     SCHED_FIFO real-time priority for DirettaAudio thread\n"
+                      << "  --audio-rt-prio <1-99>     SCHED_FIFO real-time priority for AudioEngine thread\n"
                       << std::endl;
             exit(0);
         }
@@ -309,19 +302,19 @@ int main(int argc, char* argv[]) {
         std::cout << "  Network:  " << config.networkInterface << std::endl;
     }
     if (g_syncCore >= 0) {
-        std::cout << "  syncCore:  " << std::to_string(g_syncCore) << std::endl;
+        std::cout << "  sync-core:  " << std::to_string(g_syncCore) << std::endl;
     }
     if (config.audioCore >= 0) {
-        std::cout << "  audioCore:  " << std::to_string(config.audioCore) << std::endl;
+        std::cout << "  audio-core:  " << std::to_string(config.audioCore) << std::endl;
     }
     if (otherCore >= 0) {
-        std::cout << "  otherCore:  " << std::to_string(otherCore) << std::endl;
+        std::cout << "  other-core:  " << std::to_string(otherCore) << std::endl;
     }
     if (g_syncPriority >= 0) {
-        std::cout << "  syncPrio:  " << std::to_string(g_syncPriority) << std::endl;
+        std::cout << "  sync-rt-prio:  " << std::to_string(g_syncPriority) << std::endl;
     }
     if (config.audioPrio >= 1) {
-        std::cout << "  audioPrio:  " << std::to_string(config.audioPrio) << std::endl;
+        std::cout << "  audio-rt-prio:  " << std::to_string(config.audioPrio) << std::endl;
     }
     std::cout << "  UUID:     " << config.uuid << std::endl;
     std::cout << std::endl;
