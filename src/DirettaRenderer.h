@@ -50,7 +50,7 @@ public:
     DirettaRenderer(const Config& config);
     ~DirettaRenderer();
 
-    bool start();
+    bool start(std::atomic<bool>* stopSignal = nullptr);
     void stop();
 
     bool isRunning() const { return m_running; }

@@ -125,7 +125,8 @@ DirettaSync::~DirettaSync() {
 // Initialization (Enable/Disable like MPD)
 //=============================================================================
 
-bool DirettaSync::enable(const DirettaConfig& config) {
+bool DirettaSync::enable(const DirettaConfig& config,
+                         std::atomic<bool>* stopSignal) {
     if (m_enabled) {
         DIRETTA_LOG("Already enabled");
         return true;
@@ -134,7 +135,7 @@ bool DirettaSync::enable(const DirettaConfig& config) {
     m_config = config;
     DIRETTA_LOG("Enabling...");
 
-    if (!discoverTarget()) {
+    if (!discoverTarget(stopSignal)) {
         DIRETTA_LOG("Failed to discover target");
         return false;
     }
@@ -220,47 +221,87 @@ bool DirettaSync::openSyncConnection() {
 // Target Discovery
 //=============================================================================
 
-bool DirettaSync::discoverTarget() {
+bool DirettaSync::discoverTarget(std::atomic<bool>* stopSignal) {
     DIRETTA_LOG("Discovering Diretta target...");
 
-    DIRETTA::Find::Setting findSettings;
-    findSettings.Loopback = false;
-    findSettings.ProductID = 0;
-    findSettings.Name = "DirettaRenderer";
-    findSettings.MyID = 0x44525400;
+    auto lastLogTime = std::chrono::steady_clock::now();
+    bool firstAttempt = true;
 
-    DIRETTA::Find find(findSettings);
-    if (!find.open()) {
-        DIRETTA_LOG("Failed to open finder");
-        return false;
-    }
+    while (true) {
+        // Check stop signal (Ctrl+C, etc.)
+        if (stopSignal && !stopSignal->load(std::memory_order_acquire)) {
+            DIRETTA_LOG("Discovery cancelled");
+            return false;
+        }
 
-    DIRETTA::Find::PortResalts results;
-    if (!find.findOutput(results) || results.empty()) {
+        DIRETTA::Find::Setting findSettings;
+        findSettings.Loopback = false;
+        findSettings.ProductID = 0;
+        findSettings.Name = "DirettaRenderer";
+        findSettings.MyID = 0x44525400;
+
+        DIRETTA::Find find(findSettings);
+        if (!find.open()) {
+            DIRETTA_LOG("Failed to open finder");
+            if (!stopSignal) return false;  // No retry if no stop signal
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(DirettaRetry::DISCOVER_RETRY_MS));
+            continue;
+        }
+
+        DIRETTA::Find::PortResalts results;
+        bool found = find.findOutput(results) && !results.empty();
         find.close();
-        DIRETTA_LOG("No Diretta targets found");
-        return false;
+
+        if (found) {
+            if (!firstAttempt) {
+                std::cout << "[DirettaSync] Found target!" << std::endl;
+            }
+            DIRETTA_LOG("Found " << results.size() << " target(s)");
+
+            if (results.size() == 1 || m_targetIndex == 0) {
+                auto it = results.begin();
+                m_targetAddress = it->first;
+                DIRETTA_LOG("Selected: " << it->second.targetName);
+            } else if (m_targetIndex > 0 && m_targetIndex < static_cast<int>(results.size())) {
+                auto it = results.begin();
+                std::advance(it, m_targetIndex);
+                m_targetAddress = it->first;
+                DIRETTA_LOG("Selected target #" << (m_targetIndex + 1));
+            } else {
+                auto it = results.begin();
+                m_targetAddress = it->first;
+                DIRETTA_LOG("Selected first target: " << it->second.targetName);
+            }
+            return true;
+        }
+
+        // Target not found
+        if (!stopSignal) {
+            // No stop signal provided — legacy behavior, fail immediately
+            DIRETTA_LOG("No Diretta targets found");
+            return false;
+        }
+
+        // Log periodically (every 5 seconds)
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - lastLogTime).count();
+        if (firstAttempt || elapsed >= DirettaRetry::DISCOVER_LOG_INTERVAL_MS) {
+            std::cout << "[DirettaSync] Target not found, retrying..." << std::endl;
+            lastLogTime = now;
+        }
+        firstAttempt = false;
+
+        // Wait before retry, checking stop signal periodically
+        for (int waited = 0; waited < DirettaRetry::DISCOVER_RETRY_MS; waited += 100) {
+            if (stopSignal && !stopSignal->load(std::memory_order_acquire)) {
+                DIRETTA_LOG("Discovery cancelled");
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
-
-    DIRETTA_LOG("Found " << results.size() << " target(s)");
-
-    if (results.size() == 1 || m_targetIndex == 0) {
-        auto it = results.begin();
-        m_targetAddress = it->first;
-        DIRETTA_LOG("Selected: " << it->second.targetName);
-    } else if (m_targetIndex > 0 && m_targetIndex < static_cast<int>(results.size())) {
-        auto it = results.begin();
-        std::advance(it, m_targetIndex);
-        m_targetAddress = it->first;
-        DIRETTA_LOG("Selected target #" << (m_targetIndex + 1));
-    } else {
-        auto it = results.begin();
-        m_targetAddress = it->first;
-        DIRETTA_LOG("Selected first target: " << it->second.targetName);
-    }
-
-    find.close();
-    return true;
 }
 
 bool DirettaSync::measureMTU() {
@@ -411,6 +452,8 @@ void DirettaSync::logSinkCapabilities() {
 //=============================================================================
 
 bool DirettaSync::open(const AudioFormat& format) {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
+    m_openAbortRequested.store(false, std::memory_order_release);
 
     std::cout << "[DirettaSync] ========== OPEN ==========" << std::endl;
     std::cout << "[DirettaSync] Format: " << format.sampleRate << "Hz/"
@@ -533,13 +576,7 @@ bool DirettaSync::open(const AudioFormat& format) {
                 disconnect(true);
 
                 // CRITICAL: Stop worker thread BEFORE closing SDK to prevent use-after-free
-                m_running = false;
-                {
-                    std::lock_guard<std::mutex> lock(m_workerMutex);
-                    if (m_workerThread.joinable()) {
-                        m_workerThread.join();
-                    }
-                }
+                joinWorkerWithTimeout(1000);
 
                 // Now safe to close SDK - worker thread is stopped
                 DIRETTA::Sync::close();
@@ -557,6 +594,13 @@ bool DirettaSync::open(const AudioFormat& format) {
                 std::cout << "[DirettaSync] Waiting " << resetDelayMs
                           << "ms for target to reset..." << std::endl;
                 interruptibleWait(m_transitionMutex, m_transitionCv, m_transitionWakeup, resetDelayMs);
+
+                // Check if abort was requested during wait
+                if (m_openAbortRequested.load(std::memory_order_acquire)) {
+                    std::cout << "[DirettaSync] open() aborted during DSD format transition" << std::endl;
+                    m_openAbortRequested.store(false, std::memory_order_release);
+                    return false;
+                }
 
                 // Reopen DIRETTA::Sync fresh
                 if (!openSDK()) {
@@ -580,13 +624,7 @@ bool DirettaSync::open(const AudioFormat& format) {
                 disconnect(true);
 
                 // CRITICAL: Stop worker thread BEFORE closing SDK to prevent use-after-free
-                m_running = false;
-                {
-                    std::lock_guard<std::mutex> lock(m_workerMutex);
-                    if (m_workerThread.joinable()) {
-                        m_workerThread.join();
-                    }
-                }
+                joinWorkerWithTimeout(1000);
 
                 // Now safe to close SDK - worker thread is stopped
                 DIRETTA::Sync::close();
@@ -601,6 +639,13 @@ bool DirettaSync::open(const AudioFormat& format) {
                 std::cout << "[DirettaSync] Waiting " << resetDelayMs
                           << "ms for target to reset..." << std::endl;
                 interruptibleWait(m_transitionMutex, m_transitionCv, m_transitionWakeup, resetDelayMs);
+
+                // Check if abort was requested during wait
+                if (m_openAbortRequested.load(std::memory_order_acquire)) {
+                    std::cout << "[DirettaSync] open() aborted during PCM rate change" << std::endl;
+                    m_openAbortRequested.store(false, std::memory_order_release);
+                    return false;
+                }
 
                 // Reopen DIRETTA::Sync fresh
                 if (!openSDK()) {
@@ -626,6 +671,13 @@ bool DirettaSync::open(const AudioFormat& format) {
     // Full reset for first open or after format change reopen
     if (needFullConnect) {
         fullReset();
+
+        // Check if abort was requested while we were doing format transition
+        if (m_openAbortRequested.load(std::memory_order_acquire)) {
+            std::cout << "[DirettaSync] open() aborted before sink configuration" << std::endl;
+            m_openAbortRequested.store(false, std::memory_order_release);
+            return false;
+        }
 
         // Log MS mode after reopen — supportMSmode may now be populated
         // (not available at first open, becomes available after first connection)
@@ -765,12 +817,19 @@ bool DirettaSync::open(const AudioFormat& format) {
 }
 
 void DirettaSync::close() {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
+
     std::cout << "[DirettaSync] Close()" << std::endl;
 
     if (!m_open) {
         DIRETTA_LOG("Not open");
         return;
     }
+
+    // Signal any running open() to abort
+    m_openAbortRequested.store(true, std::memory_order_release);
+    m_transitionWakeup.store(true, std::memory_order_release);
+    m_transitionCv.notify_all();
 
     // Request shutdown silence
     requestShutdownSilence(m_isDsdMode.load(std::memory_order_acquire) ? 50 : 20);
@@ -797,13 +856,7 @@ void DirettaSync::close() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // Stop worker thread
-    m_running = false;
-    {
-        std::lock_guard<std::mutex> lock(m_workerMutex);
-        if (m_workerThread.joinable()) {
-            m_workerThread.join();
-        }
-    }
+    joinWorkerWithTimeout(1000);
 
     m_open = false;
     m_playing = false;
@@ -813,10 +866,13 @@ void DirettaSync::close() {
     // Reset cached consumer generation to force reload on next getNewStream()
     m_cachedConsumerGen = UINT32_MAX;
 
+    m_openAbortRequested.store(false, std::memory_order_release);
     DIRETTA_LOG("Close() done (SDK closed)");
 }
 
 void DirettaSync::release() {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
+
     std::cout << "[DirettaSync] Release() - fully releasing target" << std::endl;
 
     // First do a normal close if still open
@@ -829,13 +885,7 @@ void DirettaSync::release() {
         DIRETTA_LOG("Closing SDK connection...");
 
         // Shutdown worker thread
-        m_running = false;
-        {
-            std::lock_guard<std::mutex> lock(m_workerMutex);
-            if (m_workerThread.joinable()) {
-                m_workerThread.join();
-            }
-        }
+        joinWorkerWithTimeout(1000);
 
         // Close SDK-level connection
         DIRETTA::Sync::close();
@@ -851,9 +901,7 @@ void DirettaSync::release() {
     m_hasPreviousFormat = false;
 
     // v2.0.1 FIX: Reset cached consumer generation to force reload on next getNewStream()
-    // Without this, if m_consumerStateGen wraps around to match m_cachedConsumerGen,
-    // stale cached values could be used after SDK reopen
-    m_cachedConsumerGen = UINT32_MAX;  // Force mismatch on next getNewStream()
+    m_cachedConsumerGen = UINT32_MAX;
 }
 
 bool DirettaSync::reopenForFormatChange() {
@@ -863,14 +911,7 @@ bool DirettaSync::reopenForFormatChange() {
     disconnect(true);
 
     // CRITICAL: Stop worker thread BEFORE closing SDK to prevent use-after-free
-    // The worker thread calls getNewStream() which accesses SDK structures
-    m_running = false;
-    {
-        std::lock_guard<std::mutex> lock(m_workerMutex);
-        if (m_workerThread.joinable()) {
-            m_workerThread.join();
-        }
-    }
+    joinWorkerWithTimeout(1000);
 
     // Now safe to close SDK - worker thread is stopped
     DIRETTA::Sync::close();
@@ -879,6 +920,13 @@ bool DirettaSync::reopenForFormatChange() {
     DIRETTA_LOG("Waiting " << m_config.formatSwitchDelayMs << "ms...");
     interruptibleWait(m_transitionMutex, m_transitionCv, m_transitionWakeup,
                       static_cast<int>(m_config.formatSwitchDelayMs));
+
+    // Check if abort was requested during wait
+    if (m_openAbortRequested.load(std::memory_order_acquire)) {
+        std::cout << "[DirettaSync] reopenForFormatChange() aborted" << std::endl;
+        m_openAbortRequested.store(false, std::memory_order_release);
+        return false;
+    }
 
     if (!openSDK()) {
         std::cerr << "[DirettaSync] Failed to re-open sync" << std::endl;
@@ -1127,9 +1175,7 @@ void DirettaSync::configureRingPCM(int rate, int channels, int direttaBps, int i
 
     size_t bytesPerSecond = static_cast<size_t>(rate) * channels * direttaBps;
     bool remoteStream = m_isRemoteStream.load(std::memory_order_acquire);
-    float bufferSeconds = remoteStream
-        ? DirettaBuffer::PCM_REMOTE_BUFFER_SECONDS
-        : DirettaBuffer::PCM_BUFFER_SECONDS;
+    float bufferSeconds = DirettaBuffer::pcmBufferSeconds(static_cast<uint32_t>(rate), remoteStream);
     size_t ringSize = DirettaBuffer::calculateBufferSize(bytesPerSecond, bufferSeconds);
 
     m_ringBuffer.resize(ringSize, 0x00);
@@ -1175,9 +1221,11 @@ void DirettaSync::configureRingPCM(int rate, int channels, int direttaBps, int i
         DIRETTA_LOG("PCM buffer (MTU): " << bytesPerBuffer << " bytes (" << framesPerBuffer << " frames)");
     }
 
+    bool highRate = static_cast<uint32_t>(rate) > DirettaBuffer::HIGHRATE_THRESHOLD;
     m_prefillTarget = DirettaBuffer::calculatePrefill(bytesPerSecond, false,
-        m_isLowBitrate.load(std::memory_order_acquire), remoteStream);
-    m_prefillTarget = std::min(m_prefillTarget, ringSize / 4);
+        m_isLowBitrate.load(std::memory_order_acquire), remoteStream,
+        static_cast<uint32_t>(rate));
+    m_prefillTarget = std::min(m_prefillTarget, ringSize / (highRate ? 2 : 4));
     m_prefillComplete = false;
 
     DIRETTA_LOG("Ring PCM: " << rate << "Hz " << channels << "ch "
@@ -1250,6 +1298,7 @@ void DirettaSync::configureRingDSD(uint32_t byteRate, int channels) {
 //=============================================================================
 
 bool DirettaSync::startPlayback() {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
     if (!m_open) return false;
     if (m_playing && !m_paused) return true;
 
@@ -1265,6 +1314,14 @@ bool DirettaSync::startPlayback() {
 }
 
 void DirettaSync::stopPlayback(bool immediate) {
+    // Signal any running open() to abort early
+    m_openAbortRequested.store(true, std::memory_order_release);
+    m_transitionWakeup.store(true, std::memory_order_release);
+    m_transitionCv.notify_all();
+
+    std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
+    m_openAbortRequested.store(false, std::memory_order_release);
+
     // Log accumulated underruns at session end
     uint32_t underruns = m_underrunCount.exchange(0, std::memory_order_relaxed);
     if (underruns > 0) {
@@ -1289,6 +1346,7 @@ void DirettaSync::stopPlayback(bool immediate) {
 }
 
 void DirettaSync::pausePlayback() {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
     if (!m_playing || m_paused) return;
 
     requestShutdownSilence(m_isDsdMode.load(std::memory_order_acquire) ? 30 : 10);
@@ -1304,6 +1362,7 @@ void DirettaSync::pausePlayback() {
 }
 
 void DirettaSync::resumePlayback() {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(m_lifecycleMutex);
     if (!m_paused) return;
 
     DIRETTA_LOG("Resuming from pause...");
@@ -1720,18 +1779,31 @@ void DirettaSync::endReconfigure() {
 
 void DirettaSync::shutdownWorker() {
     m_stopRequested = true;
+    joinWorkerWithTimeout(1000);
+}
+
+bool DirettaSync::joinWorkerWithTimeout(int timeoutMs) {
     m_running = false;
 
+    // Wait for worker to exit syncWorker() with timeout
     int waitCount = 0;
-    while (m_workerActive.load(std::memory_order_acquire) && waitCount < 100) {
+    int maxWaits = timeoutMs / 10;
+    while (m_workerActive.load(std::memory_order_acquire) && waitCount < maxWaits) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         waitCount++;
+    }
+
+    if (m_workerActive.load(std::memory_order_acquire)) {
+        std::cerr << "[DirettaSync] WARNING: Worker thread did not exit within "
+                  << timeoutMs << "ms" << std::endl;
     }
 
     std::lock_guard<std::mutex> lock(m_workerMutex);
     if (m_workerThread.joinable()) {
         m_workerThread.join();
     }
+
+    return !m_workerActive.load(std::memory_order_acquire);
 }
 
 void DirettaSync::requestShutdownSilence(int buffers) {

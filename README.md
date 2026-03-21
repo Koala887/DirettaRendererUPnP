@@ -1,4 +1,4 @@
-# Diretta UPnP Renderer v2.1.0
+# Diretta UPnP Renderer v2.1.4
 
 **The world's first native UPnP/DLNA renderer with Diretta protocol support - Low-Latency Edition**
 
@@ -8,23 +8,19 @@
 
 ---
 
-![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-2.1.4-blue.svg)
 ![Low Latency](https://img.shields.io/badge/Latency-Low-green.svg)
 ![SDK](https://img.shields.io/badge/SDK-DIRETTA::Sync-orange.svg)
 ![Audirvana](https://img.shields.io/badge/Audirvana-Compatible-green.svg)
 
 ---
 
-## What's New in v2.1.0
+## What's New in v2.1.4
 
-**Web Configuration UI, Advanced SDK settings, stability & compatibility fixes.**
+**Fix Audirvana local stream detection.**
 
-- **Web Configuration UI** — Configure the renderer from your browser at `http://<ip>:8080` — no SSH needed. Edit target, port, network interface, gapless mode, and all advanced Diretta SDK settings. Save & Restart in one click. Install via `./install.sh --webui` or menu option 6.
-- **Advanced Diretta SDK settings** — All tuning options from v1.3.3 are back: `--thread-mode`, `--cycle-time`, `--info-cycle`, `--transfer-mode`, `--target-profile-limit`, `--mtu` (see [Command Line Options](#advanced-diretta-sdk-settings) and [docs/CONFIGURATION.md](docs/CONFIGURATION.md))
-- **Automatic config migration** — Upgrading from a previous version? `install.sh` now automatically migrates your settings to the new config file (backup saved as `.bak`)
-- **Stop action fix** (by herisson-88) — uses `stopPlayback()` instead of `close()` on UPnP Stop, keeping the SDK connection open for faster resume and preventing white noise on hi-res transitions (Holo Red and similar targets)
-- **libupnp auto-detection** — Makefile uses `pkg-config` to detect libupnp include paths, fixing compilation on GentooPlayer and other non-standard distributions
-- **Privilege drop removed** — The `--user`/`DROP_USER` feature has been removed (caused SCHED_FIFO loss on worker threads)
+- **Link-local address detection** — Audirvana streams via link-local addresses (`169.254.x.x`) were incorrectly detected as remote streams, enabling HTTP reconnection options that Audirvana's local HTTP server doesn't support. This caused playback interruptions, white noise, and track advancement issues with Audirvana Studio.
+- **Resilient UPnP startup** — On systems where the network isn't ready at boot (e.g., GentooPlayer with OpenRC), UPnP initialization now retries automatically instead of failing immediately.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -32,6 +28,10 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 | Version | Highlights |
 |---------|-----------|
+| **v2.1.3** | Fix target retry pre-check bypass |
+| **v2.1.2** | Resilient target discovery (retry at startup instead of immediate exit) |
+| **v2.1.1** | UAPP compatibility, format transition stability, high sample rate buffers, build capabilities logging |
+| **v2.1.0** | Web Configuration UI, Advanced SDK settings, stop fix (herisson-88), libupnp auto-detect |
 | **v2.0.6** | Advanced SDK settings, config migration, stop fix (herisson-88), libupnp auto-detect |
 | **v2.0.5** | Stop fix for Holo Red (herisson-88), libupnp auto-detection, privilege drop removed |
 | **v2.0.4** | Centralized logging, rebuffering on underrun, ARM NEON SIMD, systemd hardening, unit tests |
@@ -191,6 +191,10 @@ Version 2.x uses a simplified, performance-focused architecture:
 - **Adaptive packet sizing**: Synchronized with SDK cycle time
 - **Jumbo frame support**: Up to 16KB MTU for maximum performance
 - **Automatic MTU detection**: Configures optimal packet size
+
+### Robustness
+- **Resilient startup**: Retries target discovery indefinitely if target is not yet available, with periodic status logging
+- **Auto-release**: Diretta target released after idle timeout for coexistence with other Diretta hosts
 
 ---
 
@@ -791,4 +795,4 @@ This software is provided "as is" without warranty. While designed for high-qual
 
 **Enjoy bit-perfect, low-latency audio streaming!**
 
-*Last updated: 2026-03-06 (v2.1.0)*
+*Last updated: 2026-03-16 (v2.1.4)*

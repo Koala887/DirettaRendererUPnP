@@ -14,11 +14,12 @@
 #include <chrono>
 #include <iomanip>
 
-#define RENDERER_VERSION "2.1.0"
+#define RENDERER_VERSION "2.1.4"
 #define RENDERER_BUILD_DATE __DATE__
 #define RENDERER_BUILD_TIME __TIME__
 
 std::unique_ptr<DirettaRenderer> g_renderer;
+std::atomic<bool> g_running{true};
 
 // Async logging infrastructure (A3 optimization)
 // Declared here (before shutdownAsyncLogging) to avoid forward reference
@@ -40,6 +41,7 @@ void shutdownAsyncLogging() {
 
 void signalHandler(int signal) {
     std::cout << "\nSignal " << signal << " received, shutting down..." << std::endl;
+    g_running.store(false, std::memory_order_release);
     if (g_renderer) {
         g_renderer->stop();
     }
@@ -280,6 +282,34 @@ int main(int argc, char* argv[]) {
               << "═══════════════════════════════════════════════════════\n"
               << std::endl;
 
+    // Log build capabilities for diagnostics
+    {
+        const char* arch =
+#if defined(__aarch64__)
+            "aarch64"
+#elif defined(__x86_64__) || defined(_M_X64)
+            "x86_64"
+#elif defined(__i386__) || defined(_M_IX86)
+            "x86"
+#elif defined(__arm__)
+            "arm"
+#else
+            "unknown"
+#endif
+        ;
+        const char* simd =
+#if DIRETTA_HAS_AVX2
+            "AVX2"
+#elif DIRETTA_HAS_NEON
+            "NEON"
+#else
+            "scalar"
+#endif
+        ;
+        std::cout << "Build: " << arch << " " << simd
+                  << " (" << RENDERER_BUILD_DATE << ")" << std::endl;
+    }
+
     DirettaRenderer::Config config = parseArguments(argc, argv);
 
     // F2: Set cpu affinity
@@ -324,7 +354,12 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Starting renderer..." << std::endl;
 
-        if (!g_renderer->start()) {
+        if (!g_renderer->start(&g_running)) {
+            if (!g_running.load(std::memory_order_acquire)) {
+                // Cancelled by signal — clean exit
+                shutdownAsyncLogging();
+                return 0;
+            }
             std::cerr << "Failed to start renderer" << std::endl;
             shutdownAsyncLogging();
             return 1;
