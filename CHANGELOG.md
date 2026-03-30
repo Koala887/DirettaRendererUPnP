@@ -1,5 +1,46 @@
 # Changelog
 
+## [2.1.8] - 2026-03-30
+
+### Added
+- **Minimal UPnP mode** (`--minimal-upnp`): Disables position thread polling and UPnP event notifications (LastChange NOTIFY) for reduced CPU overhead during playback. Designed for control points like JPlay iOS that don't rely on position polling or event subscriptions. Gapless playback, Play/Stop/Pause, and all audio functionality remain fully operational.
+
+---
+
+## [2.1.7] - 2026-03-29
+
+### Fixed
+- **UAPP GetPositionInfo response rejected by Cling parser**: The AVTransport SCPD declared only 5 output arguments for `GetPositionInfo` (Track, TrackDuration, TrackMetaData, TrackURI, RelTime) but the SOAP response returned 8 (including AbsTime, RelCount, AbsCount). Cling validates SOAP responses against the SCPD and silently rejects responses with undeclared arguments — causing UAPP to ignore position data entirely. Added the 3 missing arguments and their corresponding state variables (AbsoluteTimePosition, RelativeCounterPosition, AbsoluteCounterPosition) to the AVTransport SCPD.
+
+---
+
+## [2.1.6] - 2026-03-29
+
+### Fixed
+- **Service startup crash with IP-based NETWORK_INTERFACE**: `start-renderer.sh` passed `--bind-ip` when `NETWORK_INTERFACE` was an IP address (e.g., `192.168.1.32`), but the executable only accepts `--interface`. This caused `Unknown option: --bind-ip` and service failure on restart (reported by Pascal). `--interface` accepts both interface names and IP addresses via libupnp's `UpnpInit2`.
+
+- **UAPP progress bar stuck**: The `Play` SOAP action handler executed the track-opening callback synchronously (FFmpeg init, DirettaSync open) before sending the HTTP 200 response, causing ~320ms latency. UAPP has a short internal timeout on PlayResponse and won't start its progress timer if the response is too slow. Fix: `onPlay` callback is now launched asynchronously so the HTTP 200 is returned immediately (< 50ms). Other control points (mConnect, BubbleUPnP, Audirvana) are unaffected.
+
+---
+
+## [2.1.5] - 2026-03-27
+
+### Fixed
+
+- **Silence on 16-bit and 24-bit content with some DACs**: `configureSinkPCM()` always tried 32-bit negotiation first, regardless of the source bit depth. DACs that report 32-bit support but are physically limited to 24-bit would produce silence or noise for 16-bit and 24-bit content. Now only offers 32-bit when the source is actually 32-bit. (Reported by PatrickW, matching fix from slim2diretta v1.2.2)
+
+- **Worker thread join timeout in startSyncWorker**: Last remaining bare `m_workerThread.join()` in `startSyncWorker()` could block indefinitely if the SDK worker was unresponsive during format transitions. Now uses `joinWorkerWithTimeout(1000ms)` matching all other join sites. (Matching fix from slim2diretta v1.2.4, reported by Jeep972)
+
+- **Extended stabilization on first Diretta target connect**: Added longer stabilization delay on initial SDK connection to prevent audio glitches at startup.
+
+- **First-play glitch (~5s silence)**: Pre-connect Diretta pipeline at startup with default format (44100/24/2 PCM). The first real play now uses quick resume instead of cold connect, eliminating the silence gap reported with LMS (via slim2UPnP) and Roon.
+
+- **White noise after track change with Audirvana** (by herisson-88): Anticipated preload opened a second AudioDecoder in parallel, causing FFmpeg to read up to 5MB (`probesize` default) from Audirvana's HTTP server concurrently with the active stream. Audirvana's embedded server doesn't handle concurrent reads well, corrupting the active stream data → permanent white noise ~4 seconds after track change. Fix: limit `probesize` to 32KB and `max_analyze_duration` to 0 for local servers. (PR #61)
+
+- **UAPP position tracking still broken after v2.1.1 namespace fix**: The `u:` namespace prefix fix allowed UAPP's strict Cling parser to read the SOAP response envelope, but it then crashed parsing the time values. `RelTime`/`AbsTime` contained milliseconds (`00:00:01.407`) which strict parsers don't support. Now uses `HH:MM:SS` format without fractional seconds.
+
+---
+
 ## [2.1.4] - 2026-03-16
 
 ### Fixed

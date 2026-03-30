@@ -129,6 +129,14 @@ RAT_MP4 = 0x2000_00000000    // 4x (176.4/192k)
 // ... up to RAT_MP4096 for DSD1024
 ```
 
+## Bit Depth Handling
+
+`configureSinkPCM()` negotiates the PCM format with the Diretta sink based on the source bit depth (`inputBits`):
+- **16-bit and 24-bit sources**: Only negotiate up to 24-bit. Prevents silence/noise on DACs that report 32-bit support at the Diretta target level but are physically limited to 24-bit.
+- **32-bit sources**: Try 32-bit first, fall back to 24-bit if the sink doesn't support it.
+
+`AudioEngine.cpp` detects the real bit depth via FFmpeg's `bits_per_raw_sample` (authoritative when set) or the `sample_fmt` fallback. The detected `bitDepth` is passed through `TrackInfo` → `AudioFormat` → `configureSinkPCM()`.
+
 ## Audio Hot Path
 
 The following functions are in the critical audio path:
@@ -414,6 +422,13 @@ sudo apt install build-essential libavformat-dev libavcodec-dev libavutil-dev li
 - [x] Resilient target discovery (retry indefinitely at startup instead of exiting)
 - [x] Fix: removed `verifyTargetAvailable()` pre-check in `DirettaRenderer::start()` that bypassed retry loop
 - [x] RENDERER_NAME configuration option
+- [x] Bit depth negotiation fix — only offer 32-bit when source is 32-bit
+- [x] Audirvana preload probe fix — limit `probesize` to 32KB for local servers (herisson-88, PR #61)
+- [x] First-play pre-connect — eliminates cold connect silence on first track
+- [x] UAPP milliseconds fix — `HH:MM:SS` without fractional seconds in GetPositionInfo
+- [x] UAPP async Play — `onPlay` callback launched asynchronously for fast HTTP 200 response
+- [x] UAPP SCPD fix — added missing AbsTime/RelCount/AbsCount to GetPositionInfo SCPD declaration
+- [x] Minimal UPnP mode (`--minimal-upnp`) — disables position thread and event notifications
 
 ### Potential Future Work
 - [ ] AVX-512 format conversions (currently only memcpy uses AVX-512)

@@ -15,6 +15,8 @@
 #include "LogLevel.h"
 #define DEBUG_LOG(x) LOG_DEBUG(x)
 
+extern bool g_minimalUPnP;
+
 // Helper: XML-escape a string for use in attribute values
 static std::string xmlEscape(const std::string& input) {
     std::string output;
@@ -538,25 +540,30 @@ int UPnPDevice::actionSetNextAVTransportURI(UpnpActionRequest* request) {
 
 int UPnPDevice::actionPlay(UpnpActionRequest* request) {
     std::cout << "[UPnPDevice] Play" << std::endl;
-    
+
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_transportState = "PLAYING";
         m_transportStatus = "OK";
     }
-    
-    // Callback - the onPlay handler opens the track and sends a complete
-    // AVTransport event via trackChangeCallback/notifyGaplessTransition
-    // (or notifyStateChange for resume-from-pause). No need to send
-    // another event here; redundant events cause audio hiccups on Audirvana.
+
+    // UAPP fix: Launch onPlay asynchronously so the HTTP 200 response is sent
+    // immediately (< 50ms). UAPP has a short internal timeout on PlayResponse
+    // and won't engage its progress timer if the response is too slow.
+    // The onPlay handler opens the track, initializes FFmpeg and DirettaSync
+    // which can take 300-500ms — too long for UAPP's timeout.
+    // mConnect tolerates slow responses; UAPP does not.
     if (m_callbacks.onPlay) {
-        m_callbacks.onPlay();
+        auto callback = m_callbacks.onPlay;
+        std::thread([callback]() {
+            callback();
+        }).detach();
     }
 
-    // Response
+    // Response — sent immediately by libupnp when we return
     IXML_Document* response = createActionResponse("Play");
     UpnpActionRequest_set_ActionResult(request, response);
-    
+
     return UPNP_E_SUCCESS;
 }
 
@@ -688,7 +695,9 @@ int UPnPDevice::actionGetPositionInfo(UpnpActionRequest* request) {
         if (position < 0) position = 0;
     }
 
-    std::string posStr = formatTimePrecise(position);
+    // Use HH:MM:SS without milliseconds for maximum compatibility
+    // Strict UPnP parsers (Cling/UAPP) may crash on fractional seconds
+    std::string posStr = formatTime(static_cast<int>(position));
 
     // Log position info for debugging track transitions
     std::string shortURI = m_currentTrackURI;
@@ -945,7 +954,7 @@ IXML_Document* UPnPDevice::createActionResponse(const std::string& actionName,
                                                   const std::string& serviceType) {
     IXML_Document* response = ixmlDocument_createDocument();
     IXML_Element* actionResponse = ixmlDocument_createElement(response,
-        (actionName + "Response").c_str());
+        ("u:" + actionName + "Response").c_str());
     ixmlElement_setAttribute(actionResponse, "xmlns:u", serviceType.c_str());
     ixmlNode_appendChild(&response->n, &actionResponse->n);
     return response;
@@ -989,6 +998,7 @@ std::string UPnPDevice::getArgumentValue(IXML_Document* actionDoc,
 // Position is obtained by control points via GetPositionInfo polling.
 void UPnPDevice::sendAVTransportEvent() {
     if (m_deviceHandle < 0 || !m_running) return;
+    if (g_minimalUPnP) return;  // Minimal mode: no event notifications
 
     // Build LastChange XML with current state (no position - spec forbids it)
     std::string lastChange;
@@ -1051,6 +1061,7 @@ void UPnPDevice::sendAVTransportEvent() {
 // Helper: Send RenderingControl LastChange event to all subscribers
 void UPnPDevice::sendRenderingControlEvent() {
     if (m_deviceHandle < 0 || !m_running) return;
+    if (g_minimalUPnP) return;  // Minimal mode: no event notifications
 
     std::string lastChange;
     {
@@ -1310,6 +1321,21 @@ std::string UPnPDevice::generateAVTransportSCPD() {
           <direction>out</direction>
           <relatedStateVariable>RelativeTimePosition</relatedStateVariable>
         </argument>
+        <argument>
+          <name>AbsTime</name>
+          <direction>out</direction>
+          <relatedStateVariable>AbsoluteTimePosition</relatedStateVariable>
+        </argument>
+        <argument>
+          <name>RelCount</name>
+          <direction>out</direction>
+          <relatedStateVariable>RelativeCounterPosition</relatedStateVariable>
+        </argument>
+        <argument>
+          <name>AbsCount</name>
+          <direction>out</direction>
+          <relatedStateVariable>AbsoluteCounterPosition</relatedStateVariable>
+        </argument>
       </argumentList>
     </action>
     <action>
@@ -1524,6 +1550,18 @@ std::string UPnPDevice::generateAVTransportSCPD() {
     <stateVariable sendEvents="no">
       <name>RelativeTimePosition</name>
       <dataType>string</dataType>
+    </stateVariable>
+    <stateVariable sendEvents="no">
+      <name>AbsoluteTimePosition</name>
+      <dataType>string</dataType>
+    </stateVariable>
+    <stateVariable sendEvents="no">
+      <name>RelativeCounterPosition</name>
+      <dataType>i4</dataType>
+    </stateVariable>
+    <stateVariable sendEvents="no">
+      <name>AbsoluteCounterPosition</name>
+      <dataType>i4</dataType>
     </stateVariable>
     <stateVariable sendEvents="no">
       <name>PlaybackStorageMedium</name>

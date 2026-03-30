@@ -1,4 +1,4 @@
-# Diretta UPnP Renderer v2.1.4
+# Diretta UPnP Renderer v2.1.8
 
 **The world's first native UPnP/DLNA renderer with Diretta protocol support - Low-Latency Edition**
 
@@ -8,19 +8,18 @@
 
 ---
 
-![Version](https://img.shields.io/badge/version-2.1.4-blue.svg)
+![Version](https://img.shields.io/badge/version-2.1.8-blue.svg)
 ![Low Latency](https://img.shields.io/badge/Latency-Low-green.svg)
 ![SDK](https://img.shields.io/badge/SDK-DIRETTA::Sync-orange.svg)
 ![Audirvana](https://img.shields.io/badge/Audirvana-Compatible-green.svg)
 
 ---
 
-## What's New in v2.1.4
+## What's New in v2.1.8
 
-**Fix Audirvana local stream detection.**
+**Minimal UPnP mode for audiophile-grade playback.**
 
-- **Link-local address detection** — Audirvana streams via link-local addresses (`169.254.x.x`) were incorrectly detected as remote streams, enabling HTTP reconnection options that Audirvana's local HTTP server doesn't support. This caused playback interruptions, white noise, and track advancement issues with Audirvana Studio.
-- **Resilient UPnP startup** — On systems where the network isn't ready at boot (e.g., GentooPlayer with OpenRC), UPnP initialization now retries automatically instead of failing immediately.
+- **`--minimal-upnp` mode** — Disables position thread polling and UPnP event notifications for zero CPU overhead during playback. Designed for control points like JPlay iOS that don't need position tracking or event subscriptions. Gapless playback remains fully operational.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -28,6 +27,10 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 | Version | Highlights |
 |---------|-----------|
+| **v2.1.7** | UAPP SCPD fix (missing GetPositionInfo arguments) |
+| **v2.1.6** | UAPP async Play response, service startup fix (Pascal) |
+| **v2.1.5** | DAC bit depth negotiation, Audirvana white noise fix (herisson-88), first-play glitch, UAPP milliseconds |
+| **v2.1.4** | Audirvana link-local detection, resilient UPnP startup |
 | **v2.1.3** | Fix target retry pre-check bypass |
 | **v2.1.2** | Resilient target discovery (retry at startup instead of immediate exit) |
 | **v2.1.1** | UAPP compatibility, format transition stability, high sample rate buffers, build capabilities logging |
@@ -795,4 +798,4 @@ This software is provided "as is" without warranty. While designed for high-qual
 
 **Enjoy bit-perfect, low-latency audio streaming!**
 
-*Last updated: 2026-03-16 (v2.1.4)*
+*Last updated: 2026-03-30 (v2.1.8)*

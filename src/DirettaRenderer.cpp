@@ -230,6 +230,23 @@ bool DirettaRenderer::start(std::atomic<bool>* stopSignal) {
 
         std::cout << "[DirettaRenderer] Diretta Target ready" << std::endl;
 
+        // Pre-connect with default format to warm up Diretta pipeline
+        // This eliminates the ~5s glitch on first play
+        {
+            AudioFormat warmupFmt;
+            warmupFmt.sampleRate = 44100;
+            warmupFmt.bitDepth = 24;
+            warmupFmt.channels = 2;
+            warmupFmt.isDSD = false;
+            std::cout << "[DirettaRenderer] Pre-connecting Diretta (warmup)..." << std::endl;
+            if (m_direttaSync->open(warmupFmt)) {
+                m_direttaSync->stopPlayback(true);
+                std::cout << "[DirettaRenderer] Diretta pre-connected (warmup done)" << std::endl;
+            } else {
+                std::cerr << "[DirettaRenderer] Warmup pre-connect failed (non-fatal)" << std::endl;
+            }
+        }
+
         // Create UPnP device
         UPnPDevice::Config upnpConfig;
         upnpConfig.friendlyName = m_config.name;
@@ -719,7 +736,11 @@ bool DirettaRenderer::start(std::atomic<bool>* stopSignal) {
         m_running = true;
         m_upnpThread = std::thread(&DirettaRenderer::upnpThreadFunc, this);
         m_audioThread = std::thread(&DirettaRenderer::audioThreadFunc, this);
-        m_positionThread = std::thread(&DirettaRenderer::positionThreadFunc, this);
+        if (!g_minimalUPnP) {
+            m_positionThread = std::thread(&DirettaRenderer::positionThreadFunc, this);
+        } else {
+            DEBUG_LOG("[DirettaRenderer] Minimal UPnP: position thread disabled");
+        }
 
         std::cout << "[DirettaRenderer] Started" << std::endl;
         return true;
