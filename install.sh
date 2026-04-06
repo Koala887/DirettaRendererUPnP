@@ -195,7 +195,7 @@ install_ffmpeg_build_deps() {
 # Common FFmpeg configure options for audio-only build (legacy/full version)
 get_ffmpeg_configure_opts() {
     cat <<'OPTS'
---prefix=/usr/local
+--prefix=/usr
 --disable-debug
 --enable-shared
 --disable-stripping
@@ -1125,6 +1125,7 @@ PORT="${PORT:-4005}"
 RENDERER_NAME="${RENDERER_NAME:-}"
 GAPLESS="${GAPLESS:-}"
 VERBOSE="${VERBOSE:-}"
+MINIMAL_UPNP="${MINIMAL_UPNP:-}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
 THREAD_MODE="${THREAD_MODE:-}"
 CYCLE_TIME="${CYCLE_TIME:-}"
@@ -1143,7 +1144,29 @@ SYNC_CORE="${SYNC_CORE:-}"
 AUDIO_CORE="${AUDIO_CORE:-}"
 SYNC_PRIO="${SYNC_PRIO:-50}"
 AUDIO_PRIO="${AUDIO_PRIO:-}"
+
+# Advanced network config
+TARGET_INTERFACE="${TARGET_INTERFACE:-}"
+TARGET_SPEED="${TARGET_SPEED:-100}"
+TARGET_DUPLEX="${TARGET_DUPLEX:-full}"
+MAIN_INTERFACE="${MAIN_INTERFACE:-}"
+MAIN_SPEED="${MAIN_SPEED:-100}"
+MAIN_DUPLEX="${MAIN_DUPLEX:-full}"
+
 RENDERER_BIN="/opt/diretta-renderer-upnp/DirettaRendererUPnP"
+
+# Advanced network interface settings
+if [ -n "$TARGET_INTERFACE" ]; then
+    echo "Set advanced target network settings: $TARGET_INTERFACE"
+    ethtool -s $TARGET_INTERFACE speed $TARGET_SPEED duplex $TARGET_DUPLEX
+    sleep 1
+fi
+
+if [ -n "$MAIN_INTERFACE" ]; then
+    echo "Set advanced main network settings: $MAIN_INTERFACE"
+    ethtool -s $MAIN_INTERFACE speed $MAIN_SPEED duplex $MAIN_DUPLEX
+    sleep 1
+fi
 
 # Build command as array (preserves arguments with spaces)
 CMD=("$RENDERER_BIN")
@@ -1182,6 +1205,11 @@ if [ -n "$VERBOSE" ]; then
     CMD+=($VERBOSE)
 fi
 
+# Minimal UPnP mode (no position polling, no events)
+if [ -n "$MINIMAL_UPNP" ] && [ "$MINIMAL_UPNP" = "1" ]; then
+    CMD+=("--minimal-upnp")
+fi
+
 # Advanced Diretta settings (only if specified)
 if [ -n "$THREAD_MODE" ]; then
     CMD+=("--thread-mode" "$THREAD_MODE")
@@ -1210,6 +1238,35 @@ fi
 if [ -n "$MTU_OVERRIDE" ]; then
     CMD+=("--mtu" "$MTU_OVERRIDE")
 fi
+
+# Build exec prefix as array for process priority
+EXEC_PREFIX=()
+
+# Apply nice level
+if [ -n "$NICE_LEVEL" ] && [ "$NICE_LEVEL" != "0" ]; then
+    EXEC_PREFIX=("nice" "-n" "$NICE_LEVEL")
+fi
+
+# Apply I/O scheduling
+if [ -n "$IO_SCHED_CLASS" ]; then
+    # Map class name to ionice class number
+    case "$IO_SCHED_CLASS" in
+        realtime|1)  IONICE_CLASS=1 ;;
+        best-effort|2) IONICE_CLASS=2 ;;
+        idle|3)      IONICE_CLASS=3 ;;
+        *)           IONICE_CLASS="" ;;
+    esac
+
+    if [ -n "$IONICE_CLASS" ]; then
+        if [ "$IONICE_CLASS" = "3" ]; then
+            # idle class has no priority level
+            EXEC_PREFIX=("ionice" "-c" "$IONICE_CLASS" "${EXEC_PREFIX[@]}")
+        else
+            EXEC_PREFIX=("ionice" "-c" "$IONICE_CLASS" "-n" "${IO_SCHED_PRIORITY:-0}" "${EXEC_PREFIX[@]}")
+        fi
+    fi
+fi
+
 if [ -n "$OTHER_CORE" ]; then
     CMD+=("--other-core" "$OTHER_CORE")
 fi
@@ -1230,29 +1287,6 @@ if [ -n "$AUDIO_PRIO" ]; then
     CMD+=("--audio-rt-prio" "$AUDIO_PRIO")
 fi
 
-# Build exec prefix as array for process priority
-EXEC_PREFIX=()
-
-if [ -n "$NICE_LEVEL" ] && [ "$NICE_LEVEL" != "0" ]; then
-    EXEC_PREFIX=("nice" "-n" "$NICE_LEVEL")
-fi
-
-if [ -n "$IO_SCHED_CLASS" ]; then
-    case "$IO_SCHED_CLASS" in
-        realtime|1)  IONICE_CLASS=1 ;;
-        best-effort|2) IONICE_CLASS=2 ;;
-        idle|3)      IONICE_CLASS=3 ;;
-        *)           IONICE_CLASS="" ;;
-    esac
-    if [ -n "$IONICE_CLASS" ]; then
-        if [ "$IONICE_CLASS" = "3" ]; then
-            EXEC_PREFIX=("ionice" "-c" "$IONICE_CLASS" "${EXEC_PREFIX[@]}")
-        else
-            EXEC_PREFIX=("ionice" "-c" "$IONICE_CLASS" "-n" "${IO_SCHED_PRIORITY:-0}" "${EXEC_PREFIX[@]}")
-        fi
-    fi
-fi
-
 # Log the command being executed
 echo "════════════════════════════════════════════════════════"
 echo "  Starting Diretta UPnP Renderer"
@@ -1264,7 +1298,11 @@ echo "  Name:              ${RENDERER_NAME:-Diretta Renderer (default)}"
 echo "  Network Interface: ${NETWORK_INTERFACE:-auto-detect}"
 echo "  Nice level:        $NICE_LEVEL"
 echo "  I/O scheduling:    $IO_SCHED_CLASS (priority $IO_SCHED_PRIORITY)"
-echo "  RT priority:       $RT_PRIORITY (SCHED_FIFO)"
+echo "  Sync Core:         $SYNC_CORE"
+echo "  Audio Core:        $AUDIO_CORE"
+echo "  Other Core:        $OTHER_CORE"
+echo "  Sync RT priority:  $SYNC_PRIO (SCHED_FIFO)"
+echo "  Audio RT priority: $AUDIO_PRIO (SCHED_FIFO)"
 echo ""
 echo "Command:"
 echo "  ${EXEC_PREFIX[*]} ${CMD[*]}"
@@ -1312,7 +1350,7 @@ WRAPPER_EOF
         fi
 
         # Migrate settings from old config
-        local KNOWN_KEYS="TARGET PORT RENDERER_NAME GAPLESS VERBOSE MINIMAL_UPNP NETWORK_INTERFACE THREAD_MODE CYCLE_TIME CYCLE_MIN_TIME INFO_CYCLE TRANSFER_MODE TARGET_PROFILE_LIMIT MTU_OVERRIDE OTHER_CORE SYNC_CORE AUDIO_CORE SYNC_PRIO AUDIO_PRIO NICE_LEVEL IO_SCHED_CLASS IO_SCHED_PRIORITY"
+        local KNOWN_KEYS="TARGET PORT RENDERER_NAME GAPLESS VERBOSE MINIMAL_UPNP NETWORK_INTERFACE TARGET_INTERFACE TARGET_SPEED TARGET_DUPLEX MAIN_NETWORK MAIN_SPEED MAIN_DUPLEX THREAD_MODE CYCLE_TIME CYCLE_MIN_TIME INFO_CYCLE TRANSFER_MODE TARGET_PROFILE_LIMIT MTU_OVERRIDE OTHER_CORE SYNC_CORE AUDIO_CORE SYNC_PRIO AUDIO_PRIO NICE_LEVEL IO_SCHED_CLASS IO_SCHED_PRIORITY"
         local migrated_keys=""
         local obsolete_keys=""
 

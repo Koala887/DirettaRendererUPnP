@@ -30,7 +30,28 @@ AUDIO_CORE="${AUDIO_CORE:-}"
 SYNC_PRIO="${SYNC_PRIO:-50}"
 AUDIO_PRIO="${AUDIO_PRIO:-}"
 
+# Advanced network config
+TARGET_INTERFACE="${TARGET_INTERFACE:-}"
+TARGET_SPEED="${TARGET_SPEED:-100}"
+TARGET_DUPLEX="${TARGET_DUPLEX:-full}"
+MAIN_INTERFACE="${MAIN_INTERFACE:-}"
+MAIN_SPEED="${MAIN_SPEED:-100}"
+MAIN_DUPLEX="${MAIN_DUPLEX:-full}"
+
 RENDERER_BIN="/opt/diretta-renderer-upnp/DirettaRendererUPnP"
+
+# Advanced network interface settings
+if [ -n "$TARGET_INTERFACE" ]; then
+    echo "Set advanced target network settings: $TARGET_INTERFACE"
+    ethtool -s $TARGET_INTERFACE speed $TARGET_SPEED duplex $TARGET_DUPLEX
+    sleep 1
+fi
+
+if [ -n "$MAIN_INTERFACE" ]; then
+    echo "Set advanced main network settings: $MAIN_INTERFACE"
+    ethtool -s $MAIN_INTERFACE speed $MAIN_SPEED duplex $MAIN_DUPLEX
+    sleep 1
+fi
 
 # Build command as array (preserves arguments with spaces)
 CMD=("$RENDERER_BIN")

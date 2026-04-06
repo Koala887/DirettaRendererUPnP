@@ -76,6 +76,72 @@
             ]
         },
         {
+            "name": "Advanced Network Settings",
+            "collapsed": true,
+            "settings": [
+                {
+                    "key": "TARGET_INTERFACE",
+                    "type": "text",
+                    "label": "Target Network Interface",
+                    "description": "Interface name (eth0) for target connection. Empty = no change.",
+                    "default": ""
+                },
+                {
+                    "key": "TARGET_SPEED",
+                    "type": "select",
+                    "label": "Target Speed",
+                    "description": "Target network speed",
+                    "default": "",
+                    "options": [
+                        {"value": "10", "label": "10Mbit"},
+                        {"value": "100", "label": "100Mbit"},
+                        {"value": "1000", "label": "1000Mbit"}
+                    ]
+                },
+                {
+                    "key": "TARGET_DUPLEX",
+                    "type": "select",
+                    "label": "Target Duplex Mode",
+                    "description": "Target network duplex mode",
+                    "default": "",
+                    "options": [
+                        {"value": "half", "label": "half duplex"},
+                        {"value": "full", "label": "full duplex"}
+                    ]
+                },
+                {
+                    "key": "MAIN_INTERFACE",
+                    "type": "text",
+                    "label": "Main Network Interface",
+                    "description": "Interface name (eth0) for main connection. Empty = no change.",
+                    "default": ""
+                },
+                {
+                    "key": "MAIN_SPEED",
+                    "type": "select",
+                    "label": "Main Speed",
+                    "description": "Main network speed",
+                    "default": "",
+                    "options": [
+                        {"value": "10", "label": "10Mbit"},
+                        {"value": "100", "label": "100Mbit"},
+                        {"value": "1000", "label": "1000Mbit"}
+                    ]
+                },
+                {
+                    "key": "MAIN_DUPLEX",
+                    "type": "select",
+                    "label": "Main Duplex Mode",
+                    "description": "Main network duplex mode",
+                    "default": "",
+                    "options": [
+                        {"value": "half", "label": "half duplex"},
+                        {"value": "full", "label": "full duplex"}
+                    ]
+                },
+            ]
+        },
+        {
             "name": "Process Priority",
             "collapsed": true,
             "settings": [
