@@ -138,7 +138,7 @@
                         {"value": "half", "label": "half duplex"},
                         {"value": "full", "label": "full duplex"}
                     ]
-                },
+                }
             ]
         },
         {
