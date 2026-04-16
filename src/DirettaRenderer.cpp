@@ -51,7 +51,7 @@ bool setCpuAffinity(int audio_core_id = 3) {
     CPU_ZERO(&cpuset);
     CPU_SET(audio_core_id, &cpuset);
 
-    int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    int ret = sched_setaffinity(gettid(), sizeof(cpuset), &cpuset);
     if (ret != 0) {
         // Not fatal - may not have CAP_SYS_NICE or running as non-root
         if (g_verbose) {
@@ -65,6 +65,7 @@ bool setCpuAffinity(int audio_core_id = 3) {
     }
     return true;
 }
+
 }
 
 //=============================================================================
