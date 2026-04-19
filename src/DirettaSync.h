@@ -330,7 +330,7 @@ struct DirettaConfig {
     unsigned int onlineWaitMs = DirettaBuffer::ONLINE_WAIT_MS;
     unsigned int formatSwitchDelayMs = DirettaBuffer::FORMAT_SWITCH_DELAY_MS;
     int cpuAudio = -1;   // CPU core for SDK sending thread (-1 = no pinning)
-	int cpuDecode = -1   // CPU core for decode thread (-1 = no pinning)
+	int cpuDecode = -1;  // CPU core for decode thread (-1 = no pinning)
     int cpuOther = -1;   // CPU core for SDK other thread (-1 = no pinning)
 };
 

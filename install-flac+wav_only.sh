@@ -11,6 +11,7 @@ set -e  # Exit on error
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+LLVM=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -293,13 +294,56 @@ install_ffmpeg_8_build_deps() {
     esac
 }
 
+# Install Clang + lld (required when building with LLVM=1)
+install_clang_deps() {
+    if command -v clang &>/dev/null && command -v ld.lld &>/dev/null; then
+        print_success "Clang and lld are already installed"
+        return 0
+    fi
+
+    print_info "Installing Clang and lld for LLVM build..."
+
+    case $OS in
+        fedora|rhel|centos)
+            sudo dnf install -y clang lld
+            ;;
+        ubuntu|debian)
+            sudo apt install -y clang lld
+            ;;
+        arch|archarm|manjaro)
+            sudo pacman -Sy --needed --noconfirm clang lld
+            ;;
+        *)
+            print_warning "Unknown distribution — please install 'clang' and 'lld' manually"
+            return 1
+            ;;
+    esac
+
+    if ! command -v clang &>/dev/null; then
+        print_error "Clang installation failed"
+        return 1
+    fi
+
+    print_success "Clang $(clang --version | head -1) installed"
+    return 0
+}
+
 # Build FFmpeg 8.x with minimal audio-only configuration
 build_ffmpeg_8_minimal() {
     local version="$1"
+    local extra_flags="${2:-}"
 
     print_info "Building FFmpeg $version (minimal audio-only)..."
 
     install_ffmpeg_8_build_deps
+
+    # Auto-install Clang + lld when LLVM=1 is set
+    if [ -n "$LLVM" ]; then
+        if ! install_clang_deps; then
+            print_error "Cannot build FFmpeg with LLVM=1 without Clang/lld"
+            return 1
+        fi
+    fi
 
     mkdir -p "$FFMPEG_BUILD_DIR"
     cd "$FFMPEG_BUILD_DIR"
@@ -326,8 +370,12 @@ build_ffmpeg_8_minimal() {
     local configure_opts
     configure_opts=$(get_ffmpeg_8_minimal_opts | tr '\n' ' ')
 
+    if [ -n "$LLVM" ]; then
+        extra_flags="$extra_flags --cc=clang --cxx=clang++ --enable-lto --extra-ldflags=-flto --extra-ldflags=-fuse-ld=lld"
+    fi
+
     # Run configure
-    ./configure $configure_opts
+    ./configure $configure_opts $extra_flags
 
     print_info "Building FFmpeg (this may take a while)..."
     make -j$(nproc)
@@ -346,6 +394,14 @@ build_ffmpeg_from_source() {
     print_info "Building FFmpeg $version from source..."
 
     install_ffmpeg_build_deps
+
+    # Auto-install Clang + lld when LLVM=1 is set
+    if [ -n "$LLVM" ]; then
+        if ! install_clang_deps; then
+            print_error "Cannot build FFmpeg with LLVM=1 without Clang/lld"
+            return 1
+        fi
+    fi
 
     mkdir -p "$FFMPEG_BUILD_DIR"
     cd "$FFMPEG_BUILD_DIR"
@@ -390,6 +446,10 @@ build_ffmpeg_from_source() {
         # Remove --enable-lto and add workarounds
         configure_opts="${configure_opts//--enable-lto/}"
         extra_flags="$extra_flags --disable-inline-asm"
+    fi
+
+    if [ -n "$LLVM" ]; then
+        extra_flags="$extra_flags --cc=clang --cxx=clang++ --enable-lto --extra-ldflags=-flto --extra-ldflags=-fuse-ld=lld"
     fi
 
     # Run configure
@@ -726,7 +786,7 @@ check_ffmpeg_abi_compatibility() {
     # Get runtime version
     local runtime_ver=""
     if command -v ffmpeg &> /dev/null; then
-        runtime_ver=$(ffmpeg -version 2>&1 | head -1 | grep -oP 'ffmpeg version \K[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "")
+        runtime_ver=$(ffmpeg -version 2>&1 | head -1 | grep -oP 'ffmpeg version n?\K[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "")
     fi
 
     if [ -z "$runtime_ver" ]; then
@@ -741,6 +801,9 @@ check_ffmpeg_abi_compatibility() {
         "/usr/include/ffmpeg/libavformat/version.h"
         "/usr/include/libavformat/version.h"
         "/usr/local/include/libavformat/version.h"
+        "/usr/include/ffmpeg/libavformat/version_major.h"
+        "/usr/include/libavformat/version_major.h"
+        "/usr/local/include/libavformat/version_major.h"
     )
 
     local compile_major=""
@@ -787,7 +850,7 @@ check_ffmpeg_abi_compatibility() {
 detect_ffmpeg_runtime_version() {
     local runtime_ver=""
     if command -v ffmpeg &> /dev/null; then
-        runtime_ver=$(ffmpeg -version 2>&1 | head -1 | grep -oP 'ffmpeg version \K[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "")
+        runtime_ver=$(ffmpeg -version 2>&1 | head -1 | grep -oP 'ffmpeg version n?\K[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "")
     fi
     echo "$runtime_ver"
 }
@@ -921,14 +984,22 @@ build_renderer() {
     # Set SDK path via environment variable
     export DIRETTA_SDK_PATH="$SDK_PATH"
 
+    MAKE_ARGS=("NOLOG=1")
+    if [ -n "$LLVM" ]; then
+        # Auto-install Clang + lld when LLVM=1 is set
+        if ! install_clang_deps; then
+            print_error "Cannot build with LLVM=1 without Clang/lld"
+            return 1
+        fi
+        MAKE_ARGS+=("LLVM=$LLVM")
+    fi
     # Production build: NOLOG=1 disables SDK internal logging
     # Use local FFmpeg headers if available (for ABI compatibility)
     if [ -d "$FFMPEG_HEADERS_DIR" ] && [ -f "$FFMPEG_HEADERS_DIR/.version" ]; then
         print_info "Building with FFmpeg headers from $FFMPEG_HEADERS_DIR"
-        make NOLOG=1 FFMPEG_PATH="$FFMPEG_HEADERS_DIR"
-    else
-        make NOLOG=1
+        MAKE_ARGS+=("FFMPEG_PATH=$FFMPEG_HEADERS_DIR")
     fi
+    make "${MAKE_ARGS[@]}"
 
     if [ ! -f "bin/DirettaRendererUPnP" ]; then
         print_error "Build failed. Please check error messages above."
@@ -1123,51 +1194,44 @@ setup_systemd_service() {
 set -e
 
 # Default values (can be overridden by config file)
+# v2.1.10: Aligned variable names with CLI (KEY → --key mapping)
+# Old names (RENDERER_NAME, NETWORK_INTERFACE, MTU_OVERRIDE) still supported as fallback
 TARGET="${TARGET:-1}"
 PORT="${PORT:-4005}"
-RENDERER_NAME="${RENDERER_NAME:-}"
+NAME="${NAME:-${RENDERER_NAME:-}}"
 GAPLESS="${GAPLESS:-}"
 VERBOSE="${VERBOSE:-}"
 MINIMAL_UPNP="${MINIMAL_UPNP:-}"
-NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
+INTERFACE="${INTERFACE:-${NETWORK_INTERFACE:-}}"
 THREAD_MODE="${THREAD_MODE:-}"
 CYCLE_TIME="${CYCLE_TIME:-}"
 CYCLE_MIN_TIME="${CYCLE_MIN_TIME:-}"
 INFO_CYCLE="${INFO_CYCLE:-}"
 TRANSFER_MODE="${TRANSFER_MODE:-}"
 TARGET_PROFILE_LIMIT="${TARGET_PROFILE_LIMIT:-}"
-MTU_OVERRIDE="${MTU_OVERRIDE:-}"
+MTU="${MTU:-${MTU_OVERRIDE:-}}"
+
+# CPU affinity (no pinning by default)
+CPU_AUDIO="${CPU_AUDIO:-}"
+CPU_DECODE="${CPU_DECODE:-}"
+CPU_OTHER="${CPU_OTHER:-}"
 
 # Process priority defaults
 NICE_LEVEL="${NICE_LEVEL:--10}"
 IO_SCHED_CLASS="${IO_SCHED_CLASS:-realtime}"
 IO_SCHED_PRIORITY="${IO_SCHED_PRIORITY:-0}"
-OTHER_CORE="${OTHER_CORE:-}"
-SYNC_CORE="${SYNC_CORE:-}"
-AUDIO_CORE="${AUDIO_CORE:-}"
-SYNC_PRIO="${SYNC_PRIO:-50}"
-AUDIO_PRIO="${AUDIO_PRIO:-}"
+RT_PRIORITY="${RT_PRIORITY:-80}"
 
 # Advanced network config
 TARGET_INTERFACE="${TARGET_INTERFACE:-}"
 TARGET_SPEED="${TARGET_SPEED:-100}"
 TARGET_DUPLEX="${TARGET_DUPLEX:-full}"
-MAIN_INTERFACE="${MAIN_INTERFACE:-}"
-MAIN_SPEED="${MAIN_SPEED:-100}"
-MAIN_DUPLEX="${MAIN_DUPLEX:-full}"
-
 RENDERER_BIN="/opt/diretta-renderer-upnp/DirettaRendererUPnP"
 
 # Advanced network interface settings
 if [ -n "$TARGET_INTERFACE" ]; then
     echo "Set advanced target network settings: $TARGET_INTERFACE"
     ethtool -s $TARGET_INTERFACE speed $TARGET_SPEED duplex $TARGET_DUPLEX
-    sleep 1
-fi
-
-if [ -n "$MAIN_INTERFACE" ]; then
-    echo "Set advanced main network settings: $MAIN_INTERFACE"
-    ethtool -s $MAIN_INTERFACE speed $MAIN_SPEED duplex $MAIN_DUPLEX
     sleep 1
 fi
 
@@ -1178,8 +1242,8 @@ CMD=("$RENDERER_BIN")
 CMD+=("--target" "$TARGET")
 
 # Renderer name (supports spaces, e.g., "Devialet Target")
-if [ -n "$RENDERER_NAME" ]; then
-    CMD+=("--name" "$RENDERER_NAME")
+if [ -n "$NAME" ]; then
+    CMD+=("--name" "$NAME")
 fi
 
 # UPnP port (if specified)
@@ -1188,14 +1252,10 @@ if [ -n "$PORT" ]; then
 fi
 
 # Network interface option (CRITICAL for multi-homed systems)
-if [ -n "$NETWORK_INTERFACE" ]; then
-    if [[ "$NETWORK_INTERFACE" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "Binding to IP address: $NETWORK_INTERFACE"
-        CMD+=("--bind-ip" "$NETWORK_INTERFACE")
-    else
-        echo "Binding to network interface: $NETWORK_INTERFACE"
-        CMD+=("--interface" "$NETWORK_INTERFACE")
-    fi
+# --interface accepts both interface names (eth0) and IP addresses (192.168.1.32)
+if [ -n "$INTERFACE" ]; then
+    echo "Binding to network interface: $INTERFACE"
+    CMD+=("--interface" "$INTERFACE")
 fi
 
 # Gapless
@@ -1238,8 +1298,25 @@ if [ -n "$TARGET_PROFILE_LIMIT" ]; then
     CMD+=("--target-profile-limit" "$TARGET_PROFILE_LIMIT")
 fi
 
-if [ -n "$MTU_OVERRIDE" ]; then
-    CMD+=("--mtu" "$MTU_OVERRIDE")
+if [ -n "$MTU" ]; then
+    CMD+=("--mtu" "$MTU")
+fi
+
+if [ -n "$RT_PRIORITY" ] && [ "$RT_PRIORITY" != "50" ]; then
+    CMD+=("--rt-priority" "$RT_PRIORITY")
+fi
+
+# CPU affinity
+if [ -n "$CPU_AUDIO" ]; then
+    CMD+=("--cpu-audio" "$CPU_AUDIO")
+fi
+
+if [ -n "$CPU_DECODE" ]; then
+    CMD+=("--cpu-decode" "$CPU_DECODE")
+fi
+
+if [ -n "$CPU_OTHER" ]; then
+    CMD+=("--cpu-other" "$CPU_OTHER")
 fi
 
 # Build exec prefix as array for process priority
@@ -1270,26 +1347,6 @@ if [ -n "$IO_SCHED_CLASS" ]; then
     fi
 fi
 
-if [ -n "$OTHER_CORE" ]; then
-    CMD+=("--other-core" "$OTHER_CORE")
-fi
-
-if [ -n "$SYNC_CORE" ]; then
-    CMD+=("--sync-core" "$SYNC_CORE")
-fi
-
-if [ -n "$AUDIO_CORE" ]; then
-    CMD+=("--audio-core" "$AUDIO_CORE")
-fi
-
-if [ -n "$SYNC_PRIO" ]; then
-    CMD+=("--sync-rt-prio" "$SYNC_PRIO")
-fi
-
-if [ -n "$AUDIO_PRIO" ]; then
-    CMD+=("--audio-rt-prio" "$AUDIO_PRIO")
-fi
-
 # Log the command being executed
 echo "════════════════════════════════════════════════════════"
 echo "  Starting Diretta UPnP Renderer"
@@ -1297,15 +1354,11 @@ echo "════════════════════════�
 echo ""
 echo "Configuration:"
 echo "  Target:            $TARGET"
-echo "  Name:              ${RENDERER_NAME:-Diretta Renderer (default)}"
-echo "  Network Interface: ${NETWORK_INTERFACE:-auto-detect}"
+echo "  Name:              ${NAME:-Diretta Renderer (default)}"
+echo "  Network Interface: ${INTERFACE:-auto-detect}"
 echo "  Nice level:        $NICE_LEVEL"
 echo "  I/O scheduling:    $IO_SCHED_CLASS (priority $IO_SCHED_PRIORITY)"
-echo "  Sync Core:         $SYNC_CORE"
-echo "  Audio Core:        $AUDIO_CORE"
-echo "  Other Core:        $OTHER_CORE"
-echo "  Sync RT priority:  $SYNC_PRIO (SCHED_FIFO)"
-echo "  Audio RT priority: $AUDIO_PRIO (SCHED_FIFO)"
+echo "  RT priority:       $RT_PRIORITY (SCHED_FIFO)"
 echo ""
 echo "Command:"
 echo "  ${EXEC_PREFIX[*]} ${CMD[*]}"
@@ -1353,7 +1406,7 @@ WRAPPER_EOF
         fi
 
         # Migrate settings from old config
-        local KNOWN_KEYS="TARGET PORT RENDERER_NAME GAPLESS VERBOSE MINIMAL_UPNP NETWORK_INTERFACE TARGET_INTERFACE TARGET_SPEED TARGET_DUPLEX MAIN_NETWORK MAIN_SPEED MAIN_DUPLEX THREAD_MODE CYCLE_TIME CYCLE_MIN_TIME INFO_CYCLE TRANSFER_MODE TARGET_PROFILE_LIMIT MTU_OVERRIDE OTHER_CORE SYNC_CORE AUDIO_CORE SYNC_PRIO AUDIO_PRIO NICE_LEVEL IO_SCHED_CLASS IO_SCHED_PRIORITY"
+        local KNOWN_KEYS="TARGET PORT NAME RENDERER_NAME GAPLESS VERBOSE MINIMAL_UPNP INTERFACE NETWORK_INTERFACE TARGET_INTERFACE TARGET_SPEED TARGET_DUPLEX THREAD_MODE CYCLE_TIME CYCLE_MIN_TIME INFO_CYCLE TRANSFER_MODE TARGET_PROFILE_LIMIT MTU MTU_OVERRIDE CPU_AUDIO CPU_DECODE CPU_OTHER NICE_LEVEL IO_SCHED_CLASS IO_SCHED_PRIORITY RT_PRIORITY"
         local migrated_keys=""
         local obsolete_keys=""
 

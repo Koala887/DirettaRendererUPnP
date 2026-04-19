@@ -1191,6 +1191,8 @@ setup_systemd_service() {
 set -e
 
 # Default values (can be overridden by config file)
+# v2.1.10: Aligned variable names with CLI (KEY → --key mapping)
+# Old names (RENDERER_NAME, NETWORK_INTERFACE, MTU_OVERRIDE) still supported as fallback
 TARGET="${TARGET:-1}"
 PORT="${PORT:-4005}"
 NAME="${NAME:-${RENDERER_NAME:-}}"
@@ -1206,17 +1208,29 @@ TRANSFER_MODE="${TRANSFER_MODE:-}"
 TARGET_PROFILE_LIMIT="${TARGET_PROFILE_LIMIT:-}"
 MTU="${MTU:-${MTU_OVERRIDE:-}}"
 
+# CPU affinity (no pinning by default)
+CPU_AUDIO="${CPU_AUDIO:-}"
+CPU_DECODE="${CPU_DECODE:-}"
+CPU_OTHER="${CPU_OTHER:-}"
+
 # Process priority defaults
 NICE_LEVEL="${NICE_LEVEL:--10}"
 IO_SCHED_CLASS="${IO_SCHED_CLASS:-realtime}"
 IO_SCHED_PRIORITY="${IO_SCHED_PRIORITY:-0}"
-RT_PRIORITY="${RT_PRIORITY:-50}"
+RT_PRIORITY="${RT_PRIORITY:-80}"
 
 # Advanced network config
 TARGET_INTERFACE="${TARGET_INTERFACE:-}"
 TARGET_SPEED="${TARGET_SPEED:-100}"
 TARGET_DUPLEX="${TARGET_DUPLEX:-full}"
 RENDERER_BIN="/opt/diretta-renderer-upnp/DirettaRendererUPnP"
+
+# Advanced network interface settings
+if [ -n "$TARGET_INTERFACE" ]; then
+    echo "Set advanced target network settings: $TARGET_INTERFACE"
+    ethtool -s $TARGET_INTERFACE speed $TARGET_SPEED duplex $TARGET_DUPLEX
+    sleep 1
+fi
 
 # Build command as array (preserves arguments with spaces)
 CMD=("$RENDERER_BIN")
@@ -1289,22 +1303,40 @@ if [ -n "$RT_PRIORITY" ] && [ "$RT_PRIORITY" != "50" ]; then
     CMD+=("--rt-priority" "$RT_PRIORITY")
 fi
 
+# CPU affinity
+if [ -n "$CPU_AUDIO" ]; then
+    CMD+=("--cpu-audio" "$CPU_AUDIO")
+fi
+
+if [ -n "$CPU_DECODE" ]; then
+    CMD+=("--cpu-decode" "$CPU_DECODE")
+fi
+
+if [ -n "$CPU_OTHER" ]; then
+    CMD+=("--cpu-other" "$CPU_OTHER")
+fi
+
 # Build exec prefix as array for process priority
 EXEC_PREFIX=()
 
+# Apply nice level
 if [ -n "$NICE_LEVEL" ] && [ "$NICE_LEVEL" != "0" ]; then
     EXEC_PREFIX=("nice" "-n" "$NICE_LEVEL")
 fi
 
+# Apply I/O scheduling
 if [ -n "$IO_SCHED_CLASS" ]; then
+    # Map class name to ionice class number
     case "$IO_SCHED_CLASS" in
         realtime|1)  IONICE_CLASS=1 ;;
         best-effort|2) IONICE_CLASS=2 ;;
         idle|3)      IONICE_CLASS=3 ;;
         *)           IONICE_CLASS="" ;;
     esac
+
     if [ -n "$IONICE_CLASS" ]; then
         if [ "$IONICE_CLASS" = "3" ]; then
+            # idle class has no priority level
             EXEC_PREFIX=("ionice" "-c" "$IONICE_CLASS" "${EXEC_PREFIX[@]}")
         else
             EXEC_PREFIX=("ionice" "-c" "$IONICE_CLASS" "-n" "${IO_SCHED_PRIORITY:-0}" "${EXEC_PREFIX[@]}")
