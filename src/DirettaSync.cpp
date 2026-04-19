@@ -51,29 +51,6 @@ bool setRealtimePriority(int priority = 50) {
     return true;
 }
 
-// F2: Worker thread core affinity
-// Sets core affinity (requires root on Linux)
-// Returns true on success, false on failure (logs warning but continues)
-bool setCpuAffinity(int audio_core_id = 3) {
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(audio_core_id, &cpuset);
-
-    int ret = sched_setaffinity(gettid(), sizeof(cpuset), &cpuset);
-    if (ret != 0) {
-        // Not fatal - may not have CAP_SYS_NICE or running as non-root
-        if (g_verbose) {		
-            std::cerr << "[DirettaSync] Warning: Could not set CPU affinity to core "
-                      << audio_core_id << " (error " << ret << ")" << std::endl;
-        }				  
-        return false;
-    }
-    if (g_verbose) {
-        std::cout << "[DirettaSync] Worker thread set CPU affinity to core " << audio_core_id << std::endl;
-	}
-    return true;
-}
-
 class RingAccessGuard {
 public:
     RingAccessGuard(std::atomic<int>& users, const std::atomic<bool>& reconfiguring)
@@ -184,10 +161,19 @@ void DirettaSync::disable() {
 
 bool DirettaSync::openSDK() {
     ACQUA::Clock infoCycle = ACQUA::Clock::MicroSeconds(m_config.infoCycle);
+
+    // CPU affinity: when cpuAudio is set, add OCCUPIED flag to enable SDK CPU pinning
+    int threadMode = m_config.threadMode;
+    if (m_config.cpuAudio >= 0) {
+        threadMode |= 16;  // OCCUPIED = pin thread to CPU
+        DIRETTA_LOG("CPU affinity: SDK thread pinned to core " << m_config.cpuAudio
+                    << " (OCCUPIED mode, threadMode=" << threadMode << ")");
+    }
+
     return DIRETTA::Sync::open(
-        DIRETTA::Sync::THRED_MODE(m_config.threadMode),
+        DIRETTA::Sync::THRED_MODE(threadMode),
         infoCycle, 0, "DirettaRenderer", 0x44525400,
-        -1, -1, 0, DIRETTA::Sync::MSMODE_AUTO);
+        m_config.cpuAudio, m_config.cpuOther, 0, DIRETTA::Sync::MSMODE_AUTO);
 }
 
 bool DirettaSync::openSyncConnection() {
@@ -1705,8 +1691,12 @@ bool DirettaSync::getNewStream(diretta_stream& baseStream) {
     // Rebuffering: hold silence until buffer recovers to threshold
     // Prevents stuttering ("CD skip" effect) when small data bursts trickle in
     // during a network stall — accumulates data for a clean resumption
+    // Remote streams use a higher threshold (50%) for better CDN hiccup resilience
     if (m_rebuffering.load(std::memory_order_acquire)) {
-        size_t threshold = static_cast<size_t>(currentRingSize * DirettaBuffer::REBUFFER_THRESHOLD_PCT);
+        float thresholdPct = m_isRemoteStream.load(std::memory_order_relaxed)
+            ? DirettaBuffer::REBUFFER_THRESHOLD_REMOTE_PCT
+            : DirettaBuffer::REBUFFER_THRESHOLD_PCT;
+        size_t threshold = static_cast<size_t>(currentRingSize * thresholdPct);
         if (avail >= threshold) {
             m_rebuffering.store(false, std::memory_order_release);
             LOG_WARN("[DirettaSync] Rebuffering complete — resuming playback (avail="
@@ -1766,13 +1756,23 @@ bool DirettaSync::startSyncWorker() {
     m_workerThread = std::thread([this]() {
         // F1: Elevate worker thread priority for reduced jitter
         // SCHED_FIFO priority 50 (mid-range real-time) - requires root/CAP_SYS_NICE
-        setRealtimePriority(g_syncPriority);
+        setRealtimePriority(g_rtPriority);
 
-        // F2: Set cpu affinity
-        if ( g_syncCore >= 0 ) {
-            setCpuAffinity(g_syncCore);
+        // Pin worker thread to cpuAudio core (belt and suspenders with SDK cpuMain
+        // which doesn't always work, e.g., on RPi 4)
+        if (m_config.cpuAudio >= 0) {
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            CPU_SET(m_config.cpuAudio, &cpuset);
+            if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) == 0) {
+                std::cout << "[DirettaSync] Worker thread pinned to CPU core "
+                          << m_config.cpuAudio << std::endl;
+            } else {
+                std::cerr << "[DirettaSync] WARNING: Failed to pin worker to core "
+                          << m_config.cpuAudio << std::endl;
+            }
         }
-        
+
         while (m_running.load(std::memory_order_acquire)) {
             if (!syncWorker()) {
                 std::this_thread::sleep_for(std::chrono::microseconds(100));

@@ -1,4 +1,4 @@
-# Diretta UPnP Renderer v2.1.8
+# Diretta UPnP Renderer v2.2.3
 
 **The world's first native UPnP/DLNA renderer with Diretta protocol support - Low-Latency Edition**
 
@@ -8,18 +8,20 @@
 
 ---
 
-![Version](https://img.shields.io/badge/version-2.1.8-blue.svg)
+![Version](https://img.shields.io/badge/version-2.2.3-blue.svg)
 ![Low Latency](https://img.shields.io/badge/Latency-Low-green.svg)
 ![SDK](https://img.shields.io/badge/SDK-DIRETTA::Sync-orange.svg)
 ![Audirvana](https://img.shields.io/badge/Audirvana-Compatible-green.svg)
 
 ---
 
-## What's New in v2.1.8
+## What's New in v2.2.3
 
-**Minimal UPnP mode for audiophile-grade playback.**
+**Complete CPU isolation, build system optimization, Web UI Stop button.**
 
-- **`--minimal-upnp` mode** — Disables position thread polling and UPnP event notifications for improved audio quality (lower noise floor, more analog sound). Recommended for JPlay iOS, LMS via slim2UPnP (fixes position bar drift), and Roon. Progress bar may become approximate but gapless playback remains fully operational.
+- **Web UI Stop button** — Added a Stop button next to Save & Restart and Restart Only. Useful for users running DirettaRendererUPnP on their own Linux distributions to stop the service directly from the web UI (e.g., to release the Diretta target for another player or before maintenance). Includes a confirmation dialog.
+- **Full thread isolation** — Main thread and log drain thread are now pinned to `--cpu-other` core, ensuring all non-audio threads stay off the audio core. libupnp internal threads also inherit the affinity automatically via thread inheritance. (Reported by progman, confirmed by sheviks)
+- **LDFLAGS propagation & -O3 unified** (PR #65 by sheviks) — LDFLAGS now propagate `-O` and `-march` flags to the linker when LTO is enabled, ensuring architecture-specific optimizations (AVX2/AVX-512/Zen4/NEON) are fully applied during whole-program analysis. Also forces `lld` as the linker with Clang and unifies all C++ files to `-O3`.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -27,6 +29,13 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 | Version | Highlights |
 |---------|-----------|
+| **v2.2.2** | Clang + LTO build support (sheviks), 32-bit 768kHz playlist fix (abase) |
+| **v2.2.1** | Larger PCM buffer for CDN resilience, FFmpeg detection fix (sheviks) |
+| **v2.2.0** | CPU affinity, AIFF support, MinimServer DSD transcoding fix |
+| **v2.1.11** | AIFF support (FFmpeg build config) |
+| **v2.1.10** | Config variable alignment for GentooPlayer/downstream integrations |
+| **v2.1.9** | Track restart fix (same URI shortcut removed) |
+| **v2.1.8** | Minimal UPnP mode (`--minimal-upnp`) for audiophile-grade playback |
 | **v2.1.7** | UAPP SCPD fix (missing GetPositionInfo arguments) |
 | **v2.1.6** | UAPP async Play response, service startup fix (Pascal) |
 | **v2.1.5** | DAC bit depth negotiation, Audirvana white noise fix (herisson-88), first-play glitch, UAPP milliseconds |
@@ -379,6 +388,27 @@ The installer provides an interactive menu with options for:
 - Setting up the Diretta target
 - Installing the web configuration UI
 
+#### Alternative: Build with Clang + LTO
+
+GCC is the default compiler. Users who prefer Clang with Link-Time Optimization can use:
+
+```bash
+# Build with Clang + LTO (auto-installs clang and lld)
+env LLVM=1 ./install.sh             # Interactive installer
+# or
+make LLVM=1                         # Direct build (requires clang/lld already installed)
+```
+
+When using `install.sh` with `LLVM=1`, `clang` and `lld` are installed automatically if not already present (supports Fedora, Debian/Ubuntu, Arch). When building directly with `make LLVM=1`, install them manually:
+
+```bash
+sudo dnf install clang lld          # Fedora
+sudo apt install clang lld          # Debian/Ubuntu
+sudo pacman -S clang lld            # Arch
+```
+
+Clang+LTO is opt-in and may offer different performance and sound characteristics. (Added in v2.2.2, PR #64 by sheviks)
+
 ### 4. Configure Network (Recommended)
 
 Enable jumbo frames for best performance:
@@ -457,6 +487,46 @@ DSD conversion mode is selected once per track for optimal performance:
 | 24-bit pack (MSB) | `convert24BitPackedShifted_AVX2()` | 8 samples/instruction |
 | 16→32 upsample | `convert16To32_AVX2()` | 16 samples/instruction |
 | DSD interleave | `convertDSD_*()` | 32 bytes/instruction |
+
+### Audio Quality Tuning
+
+For the best possible audio quality, the following system-level optimizations are recommended:
+
+#### CPU Affinity (v2.2.0+)
+
+Pinning audio threads to dedicated CPU cores reduces jitter and improves soundstage clarity:
+
+```ini
+# In /etc/default/diretta-renderer
+CPU_AUDIO=2    # Diretta worker thread (critical hot path)
+CPU_OTHER=3    # Decode, UPnP, and other threads
+```
+
+Use cores on the same CCD (AMD) or same P-core cluster (Intel) and avoid core 0 (used by kernel/interrupts). Also configurable via the web UI under "CPU Affinity".
+
+#### Disable SMT (Hyperthreading)
+
+Simultaneous Multithreading (SMT/HT) shares physical core resources between two logical threads, which can introduce micro-jitter on the audio path. Disabling SMT ensures each core is fully dedicated:
+
+```bash
+# Disable SMT (temporary, until reboot)
+echo off | sudo tee /sys/devices/system/cpu/smt/control
+
+# Verify
+cat /sys/devices/system/cpu/smt/active   # Should show "0"
+```
+
+For a permanent setting, add `nosmt` to your kernel boot parameters (in `/etc/default/grub`, then run `grub2-mkconfig`).
+
+#### Minimal UPnP Mode (v2.1.8+)
+
+Reduces CPU wakeups during playback by disabling position polling and event notifications:
+
+```ini
+MINIMAL_UPNP=1
+```
+
+Recommended for JPlay iOS, LMS via slim2UPnP, and Roon. See [Minimal UPnP Mode](#minimal-upnp-mode) for details.
 
 ### Network Requirements
 
@@ -798,4 +868,4 @@ This software is provided "as is" without warranty. While designed for high-qual
 
 **Enjoy bit-perfect, low-latency audio streaming!**
 
-*Last updated: 2026-03-30 (v2.1.8)*
+*Last updated: 2026-04-18 (v2.2.3)*

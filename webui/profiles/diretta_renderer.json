@@ -9,7 +9,7 @@
             "collapsed": false,
             "settings": [
                 {
-                    "key": "RENDERER_NAME",
+                    "key": "NAME",
                     "type": "text",
                     "label": "Renderer Name",
                     "description": "UPnP friendly name visible to control points. Supports spaces (e.g., 'Devialet Target').",
@@ -56,7 +56,7 @@
                     ]
                 },
                 {
-                    "key": "NETWORK_INTERFACE",
+                    "key": "INTERFACE",
                     "type": "text",
                     "label": "Network Interface",
                     "description": "Interface name (eth0) or IP address. Empty = auto-detect.",
@@ -108,36 +108,36 @@
                         {"value": "half", "label": "half duplex"},
                         {"value": "full", "label": "full duplex"}
                     ]
-                },
+                }
+            ]
+        },
+        {
+            "name": "CPU Affinity",
+            "collapsed": true,
+            "settings": [
                 {
-                    "key": "MAIN_INTERFACE",
-                    "type": "text",
-                    "label": "Main Network Interface",
-                    "description": "Interface name (eth0) for main connection. Empty = no change.",
-                    "default": ""
-                },
-                {
-                    "key": "MAIN_SPEED",
-                    "type": "select",
-                    "label": "Main Speed",
-                    "description": "Main network speed",
+                    "key": "CPU_AUDIO",
+                    "type": "number",
+                    "label": "Audio Core",
+                    "description": "Pin Diretta worker thread to this CPU core. Empty = no pinning.",
                     "default": "",
-                    "options": [
-                        {"value": "10", "label": "10Mbit"},
-                        {"value": "100", "label": "100Mbit"},
-                        {"value": "1000", "label": "1000Mbit"}
-                    ]
+                    "min": 0
                 },
                 {
-                    "key": "MAIN_DUPLEX",
-                    "type": "select",
-                    "label": "Main Duplex Mode",
-                    "description": "Main network duplex mode",
+                    "key": "CPU_DECODE",
+                    "type": "number",
+                    "label": "Decode Core",
+                    "description": "Pin decode thread to this CPU core. Empty = no pinning.",
                     "default": "",
-                    "options": [
-                        {"value": "half", "label": "half duplex"},
-                        {"value": "full", "label": "full duplex"}
-                    ]
+                    "min": 0
+                },
+                {
+                    "key": "CPU_OTHER",
+                    "type": "number",
+                    "label": "Other Core",
+                    "description": "Pin UPnP threads to this CPU core. Empty = no pinning.",
+                    "default": "",
+                    "min": 0
                 }
             ]
         },
@@ -176,48 +176,12 @@
                     "max": 7
                 },
                 {
-                    "key": "SYNC_PRIO",
+                    "key": "RT_PRIORITY",
                     "type": "number",
-                    "label": "DirettaSync RT Priority (SCHED_FIFO)",
-                    "description": "Real-time priority for the DirettaSync thread (1-99). Higher = more priority. Default: 50",
+                    "label": "RT Priority (SCHED_FIFO)",
+                    "description": "Real-time priority for the audio worker thread (1-99). Higher = more priority. Default: 50",
                     "default": "50",
                     "min": 1,
-                    "max": 99
-                },
-                {
-                    "key": "AUDIO_PRIO",
-                    "type": "number",
-                    "label": "AudioEngine RT Priority (SCHED_FIFO)",
-                    "description": "Real-time priority for the AudioEngine thread (0-99). Higher = more priority (0 = off). Default: 0",
-                    "default": "0",
-                    "min": 0,
-                    "max": 99
-                },
-                {
-                    "key": "SYNC_CORE",
-                    "type": "number",
-                    "label": "DirettaSync core affinity",
-                    "description": "Set CPU core affinity for the DirettaSync thread.",
-                    "default": "-1",
-                    "min": -1,
-                    "max": 99
-                },
-                {
-                    "key": "AUDIO_CORE",
-                    "type": "number",
-                    "label": "AudioEngine core affinity",
-                    "description": "Set CPU core affinity for the AudioEngine thread",
-                    "default": "-1",
-                    "min": -1,
-                    "max": 99
-                },
-                {
-                    "key": "OTHER_CORE",
-                    "type": "number",
-                    "label": "Other Threads Core affinity",
-                    "description": "Set CPU core affinity for all other threads",
-                    "default": "-1",
-                    "min": -1,
                     "max": 99
                 }
             ]
@@ -284,9 +248,9 @@
                     "min": 0
                 },
                 {
-                    "key": "MTU_OVERRIDE",
+                    "key": "MTU",
                     "type": "number",
-                    "label": "MTU Override (bytes)",
+                    "label": "MTU (bytes)",
                     "description": "Force specific MTU. Empty = auto-detect. Common values: 1500, 4096, 9000",
                     "default": "",
                     "min": 1500,

@@ -41,9 +41,11 @@ public:
         std::string transferMode;  // Transfer mode: auto|varmax|varauto|fixauto|random
         int mtu = -1;             // MTU override in bytes (default: auto-detect)
         int targetProfileLimitTime = -1;  // 0=SelfProfile (stable, default), >0=TargetProfile limit in µs (experimental)
-        int audioCore;
-        int audioPrio;
-		
+
+        // CPU affinity (-1 = no pinning, default)
+        int cpuAudio = -1;        // Core for DirettaSync worker thread (critical hot path)
+        int cpuOther = -1;        // Core for other threads (UPnP, position, decode)
+
         Config();
     };
 

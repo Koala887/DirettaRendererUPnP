@@ -13,8 +13,10 @@
 #include <thread>
 #include <chrono>
 #include <iomanip>
+#include <pthread.h>
+#include <sched.h>
 
-#define RENDERER_VERSION "2.1.8"
+#define RENDERER_VERSION "2.2.3"
 #define RENDERER_BUILD_DATE __DATE__
 #define RENDERER_BUILD_TIME __TIME__
 
@@ -57,12 +59,27 @@ void statsSignalHandler(int /*signal*/) {
 
 bool g_verbose = false;
 bool g_minimalUPnP = false;
-int g_syncPriority = 50;
-int g_syncCore = -1;
-int otherCore = -1;
+int g_rtPriority = 50;
 LogLevel g_logLevel = LogLevel::INFO;
 
+// Helper: pin current thread to a specific CPU core
+static bool pinCurrentThread(int core, const char* name) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) == 0) {
+        std::cout << "[" << name << "] Pinned to CPU core " << core << std::endl;
+        return true;
+    }
+    std::cerr << "[" << name << "] Failed to pin to core " << core << std::endl;
+    return false;
+}
+
+// Global storage for cpuOther value (set from config in main, used by logDrainThread)
+static int g_cpuOther = -1;
+
 void logDrainThreadFunc() {
+    if (g_cpuOther >= 0) pinCurrentThread(g_cpuOther, "Log Drain Thread");
     LogEntry entry;
     while (!g_logDrainStop.load(std::memory_order_acquire)) {
         // Drain all pending log entries
@@ -78,25 +95,6 @@ void logDrainThreadFunc() {
         std::cout << "[" << (entry.timestamp_us / 1000) << "ms] "
                   << entry.message << std::endl;
     }
-}
-
-// Set main program core affinity
-// Sets core affinity (requires root on Linux)
-// Returns true on success, false on failure (logs warning but continues)
-bool setMainCpuAffinity(int core_id = 0) {
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(core_id, &cpuset);
-
-    int ret = sched_setaffinity(0, sizeof(cpuset), &cpuset);
-    if (ret != 0) {
-        // Not fatal - may not have CAP_SYS_NICE or running as non-root
-        std::cerr << "[Main] Warning: Could not set CPU affinity to core "
-                  << core_id << " (error " << ret << ")" << std::endl;
-        return false;
-    }
-    std::cout << "[Main] Main thread set CPU affinity to core " << core_id << std::endl;
-    return true;
 }
 
 void listTargets() {
@@ -117,9 +115,6 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
 
     config.name = "Diretta Renderer";
     config.port = 0;
-    config.audioCore = -1;
-    config.audioPrio = 0;
-    otherCore = -1;
     config.gaplessEnabled = true;
 
     for (int i = 1; i < argc; i++) {
@@ -131,29 +126,6 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
             config.port = std::atoi(argv[++i]);
         }
-        else if (arg == "--sync-core" && i + 1 < argc) {
-            g_syncCore = std::atoi(argv[++i]);
-        }
-        else if (arg == "--other-core" && i + 1 < argc) {
-            otherCore = std::atoi(argv[++i]);
-        }
-        else if (arg == "--audio-core" && i + 1 < argc) {
-            config.audioCore = std::atoi(argv[++i]);
-        }        
-        else if (arg == "--audio-rt-prio" && i + 1 < argc) {
-            config.audioPrio = std::atoi(argv[++i]);
-            if (config.audioPrio < 1 || config.audioPrio > 99) {
-                std::cerr << "Warning: audio-rt-prio should be between 1-99" << std::endl;
-                config.audioPrio = std::max(1, std::min(99, config.audioPrio));
-            }
-        } 
-        else if (arg == "--sync-rt-prio" && i + 1 < argc) {
-            g_syncPriority = std::atoi(argv[++i]);
-            if (g_syncPriority < 1 || g_syncPriority > 99) {
-                std::cerr << "Warning: sync-rt-prio should be between 1-99" << std::endl;
-                g_syncPriority = std::max(1, std::min(99, g_syncPriority));
-            }			
-        } 
         else if (arg == "--uuid" && i + 1 < argc) {
             config.uuid = argv[++i];
         }
@@ -227,6 +199,40 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
         else if (arg == "--mtu" && i + 1 < argc) {
             config.mtu = std::atoi(argv[++i]);
         }
+        else if (arg == "--rt-priority" && i + 1 < argc) {
+            g_rtPriority = std::atoi(argv[++i]);
+            if (g_rtPriority < 1 || g_rtPriority > 99) {
+                std::cerr << "Warning: rt-priority should be between 1-99" << std::endl;
+                g_rtPriority = std::max(1, std::min(99, g_rtPriority));
+            }
+        }
+        else if (arg == "--cpu-audio" && i + 1 < argc) {
+            config.cpuAudio = std::atoi(argv[++i]);
+            int numCores = static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+            if (config.cpuAudio < 0 || config.cpuAudio >= numCores) {
+                std::cerr << "Warning: --cpu-audio " << config.cpuAudio
+                          << " is invalid (this system has cores 0-" << (numCores - 1) << ")" << std::endl;
+                config.cpuAudio = -1;
+            }
+        }
+        else if (arg == "--cpu-decode" && i + 1 < argc) {
+            config.cpuDecode = std::atoi(argv[++i]);
+            int numCores = static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+            if (config.cpuDecode < 0 || config.cpuDecode >= numCores) {
+                std::cerr << "Warning: --cpu-decode " << config.cpuDecode
+                          << " is invalid (this system has cores 0-" << (numCores - 1) << ")" << std::endl;
+                config.cpuDecode = -1;
+            }
+        }
+        else if (arg == "--cpu-other" && i + 1 < argc) {
+            config.cpuOther = std::atoi(argv[++i]);
+            int numCores = static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+            if (config.cpuOther < 0 || config.cpuOther >= numCores) {
+                std::cerr << "Warning: --cpu-other " << config.cpuOther
+                          << " is invalid (this system has cores 0-" << (numCores - 1) << ")" << std::endl;
+                config.cpuOther = -1;
+            }
+        }
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Diretta UPnP Renderer (Simplified Architecture)\n\n"
                       << "Usage: " << argv[0] << " [options]\n\n"
@@ -255,11 +261,12 @@ DirettaRenderer::Config parseArguments(int argc, char* argv[]) {
                       << "  --transfer-mode <mode>     Transfer mode: auto, varmax, varauto, fixauto, random\n"
                       << "  --target-profile-limit <us> Target profile limit time (0=SelfProfile (stable), default: 0, >0=experimental)\n"
                       << "  --mtu <bytes>              MTU override (default: auto-detect)\n"
-                      << "  --sync-core <core>         Cpu core for DirettaSync thread\n"
-                      << "  --audio-core <core>        Cpu core for AudioEngine thread\n"
-                      << "  --other-core <core>        Cpu core for other threads\n"
-                      << "  --sync-rt-prio <1-99>      SCHED_FIFO real-time priority for DirettaSync thread (default: 50)\n"
-                      << "  --audio-rt-prio <1-99>     SCHED_FIFO real-time priority for AudioEngine thread\n"
+                      << "  --rt-priority <1-99>       SCHED_FIFO real-time priority for worker thread (default: 50)\n"
+                      << "\n"
+                      << "CPU affinity (core isolation for audio quality):\n"
+                      << "  --cpu-audio <core>         Pin Diretta worker thread to CPU core (default: no pinning)\n"
+                      << "  --cpu-decode <core>        Pin decode thread to CPU core (default: no pinning)\n"
+                      << "  --cpu-other <core>         Pin other threads (decode/UPnP) to CPU core (default: no pinning)\n"
                       << std::endl;
             exit(0);
         }
@@ -318,10 +325,19 @@ int main(int argc, char* argv[]) {
 
     DirettaRenderer::Config config = parseArguments(argc, argv);
 
-    // F2: Set cpu affinity
-    if (otherCore >= 0) {
-        setMainCpuAffinity(otherCore);
+    // Validate CPU affinity: warn if both cores are the same (no isolation)
+    if (config.cpuAudio >= 0 && config.cpuOther >= 0 && config.cpuAudio == config.cpuOther) {
+        std::cerr << "Warning: --cpu-audio and --cpu-other are set to the same core ("
+                  << config.cpuAudio << "). No thread isolation will occur." << std::endl;
     }
+
+    // Pin main thread to cpuOther core (keeps it off the audio core)
+    if (config.cpuOther >= 0) {
+        pinCurrentThread(config.cpuOther, "Main Thread");
+    }
+
+    // Store cpuOther for log drain thread (launched below)
+    g_cpuOther = config.cpuOther;
 
     // Initialize async logging ring buffer (A3 optimization)
     // Only active in verbose mode to avoid overhead in production
@@ -339,21 +355,6 @@ int main(int argc, char* argv[]) {
     }
     if (!config.networkInterface.empty()) {
         std::cout << "  Network:  " << config.networkInterface << std::endl;
-    }
-    if (g_syncCore >= 0) {
-        std::cout << "  sync-core:  " << std::to_string(g_syncCore) << std::endl;
-    }
-    if (config.audioCore >= 0) {
-        std::cout << "  audio-core:  " << std::to_string(config.audioCore) << std::endl;
-    }
-    if (otherCore >= 0) {
-        std::cout << "  other-core:  " << std::to_string(otherCore) << std::endl;
-    }
-    if (g_syncPriority >= 0) {
-        std::cout << "  sync-rt-prio:  " << std::to_string(g_syncPriority) << std::endl;
-    }
-    if (config.audioPrio >= 1) {
-        std::cout << "  audio-rt-prio:  " << std::to_string(config.audioPrio) << std::endl;
     }
     std::cout << "  UUID:     " << config.uuid << std::endl;
     std::cout << std::endl;

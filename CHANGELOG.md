@@ -1,5 +1,74 @@
 # Changelog
 
+## [2.2.3] - 2026-04-18
+
+### Added
+- **Web UI Stop button**: Added a Stop button alongside the existing Save & Restart and Restart Only buttons. Useful for users running DirettaRendererUPnP on their own Linux distributions to stop the service directly from the web UI — e.g., to release the Diretta target for another player or before maintenance. Includes a confirmation dialog.
+
+### Fixed
+- **CPU affinity: main and log drain threads not pinned**: When `--cpu-other` was set, the main thread and the log drain thread were not pinned to the specified core, allowing them to migrate to cores 0/1 and interfere with audio isolation. Now both are pinned to `cpuOther` alongside the other non-critical threads. (Reported by progman)
+
+### Changed
+- **Build system optimization** (PR #65 by sheviks): LDFLAGS now propagate `-O` and `-march` flags to the linker when LTO is enabled, ensuring whole-program analysis uses architecture-specific optimizations (AVX2/AVX-512/Zen4/NEON) instead of falling back to generic instructions. Also forces `lld` as the linker with Clang (`-fuse-ld=lld`) and unifies all C++ files to `-O3` (was `-O2`, while C files were already `-O3`). Applied to both the main binary and the FFmpeg minimal build in `install.sh`.
+
+---
+
+## [2.2.2] - 2026-04-11
+
+### Added
+- **Clang + LTO build support** (PR #64 by sheviks): The Makefile and `install.sh` now support building with Clang and Link-Time Optimization as an alternative to the default GCC build. Usage: `env LLVM=1 ./install.sh` or `make LLVM=1`. Clang+LTO may offer different performance and sound characteristics for users who compile from source. GCC remains the default.
+
+### Fixed
+- **32-bit 768kHz playlist advancement**: Streams served without Content-Length (e.g., slim2UPnP for high-rate PCM) would return `AVERROR(EIO)` at end-of-track instead of `AVERROR_EOF` because FFmpeg expected `UINT64_MAX` bytes but the stream closed mid-chunk. This prevented the playlist from advancing to the next track. Fix: if EIO occurs after successfully reading data (pos > 0), treat it as normal EOF. (Reported by abase)
+- **Typo `clag++` → `clang++` in install.sh** (follow-up to PR #64): Small typo in the Clang support code that would have caused FFmpeg's configure step to fail with "compiler not found" when building with `LLVM=1`.
+
+---
+
+## [2.2.1] - 2026-04-11
+
+### Changed
+- **Larger PCM buffer for CDN resilience**: Increased remote streaming buffer to absorb Qobuz/Tidal CDN hiccups that affect most Diretta users. `PCM_REMOTE_BUFFER_SECONDS` raised from 1.0s to 3.0s (triple the buffer for CDN glitches), `PCM_REMOTE_PREFILL_MS` from 150ms to 500ms (larger initial buffer before playback). Added adaptive `REBUFFER_THRESHOLD_REMOTE_PCT` at 50% (vs 20% for local) — requires more data before resuming after an underrun to avoid stuttering cycles. For a 44.1/16/2 stream: buffer goes from 520KB to 1.5MB (3 seconds of audio), rebuffer threshold from ~200ms to ~1.5 seconds.
+
+### Fixed
+- **FFmpeg version detection in install.sh** (PR #63 by sheviks): The regex for detecting FFmpeg runtime version didn't handle the optional `n` prefix used by git-tagged builds (`ffmpeg version n8.1`), causing ABI compatibility checks to fail. Also added support for the new `version_major.h` header file introduced in recent FFmpeg releases, where major version macros were moved from `version.h` to a dedicated header. The script now searches both header variants for compatibility with legacy and modern FFmpeg installations.
+
+---
+
+## [2.2.0] - 2026-04-09
+
+### Added
+- **CPU affinity for audio thread isolation** (`--cpu-audio`, `--cpu-other`): Pin the Diretta worker thread and other threads (decode, UPnP, position) to dedicated CPU cores for reduced jitter and improved audio quality. When `--cpu-audio` is set, the SDK OCCUPIED flag is automatically enabled for hardware-level CPU pinning. Configurable via CLI, config file (`CPU_AUDIO`, `CPU_OTHER`), and web UI. Default: no pinning (current behavior preserved). (Requested by Daniel/Koala887)
+
+### Fixed
+- **Buffer underrun on long tracks from local UPnP sources**: FFmpeg HTTP buffer was 32KB with 10s timeout for local servers (slim2UPnP, JPLAY, etc.), causing underruns and premature track cutoff on long tracks (40+ minutes) when relaying Qobuz/Tidal streams. Now uses 256KB buffer and 30s timeout for all local servers. (Reported by Hoorna/Alfred, Dominique)
+- **AIFF playback failure**: Added `aiff` demuxer and big-endian PCM decoders (`pcm_s16be`, `pcm_s24be`, `pcm_s32be`) to FFmpeg build configuration. Users who compiled FFmpeg via `install.sh` need to recompile for AIFF support. (Reported by Pascal)
+- **CPU affinity core validation**: `--cpu-audio` and `--cpu-other` are now validated against the actual number of CPU cores on the system. Invalid core numbers are rejected with a warning and reset to no pinning. Also warns if both options are set to the same core (no isolation). (Suggested by Hoorna/Alfred)
+- **Diretta worker thread not pinned to cpuAudio core**: The SDK's OCCUPIED mode with `cpuMain` doesn't reliably pin the worker thread on all platforms (confirmed on RPi 4). Now explicitly pins the worker thread via `pthread_setaffinity_np` in `startSyncWorker()`, in addition to the SDK parameter. (Reported by Hoorna/Alfred)
+- **DSF files fail to play with MinimServer transcoding**: When MinimServer transcodes DSF to WAV (e.g., `stream.transcode=dsf:wav24;176`), the URL contains `.dsf` in the source path but ends with `.wav`. The format hint incorrectly forced FFmpeg's DSF demuxer on WAV data. Now checks only the last URL component's extension. (Reported by lithiumnk)
+
+---
+
+## [2.1.10] - 2026-04-06
+
+### Fixed
+- **AIFF playback failure** (`Invalid data found when processing input`): FFmpeg was compiled without the AIFF demuxer and big-endian PCM decoders. Added `aiff` demuxer and `pcm_s16be`, `pcm_s24be`, `pcm_s32be` decoders to both FFmpeg build configurations in `install.sh`. Users who compiled FFmpeg via `install.sh` (minimal configuration) need to recompile FFmpeg to enable AIFF support. (Reported by Pascal)
+
+---
+
+## [2.1.10] - 2026-04-06
+
+### Changed
+- **Config variable names aligned with CLI** (requested by Filippo/GentooPlayer): `RENDERER_NAME` → `NAME`, `NETWORK_INTERFACE` → `INTERFACE`, `MTU_OVERRIDE` → `MTU`. Enables simple automatic mapping (`KEY` → `--key`) for downstream integrations. Old names are still supported as fallback for backward compatibility.
+
+---
+
+## [2.1.9] - 2026-04-01
+
+### Fixed
+- **Cannot restart track from beginning while playing**: When a control point sends SetAVTransportURI with the same URI as the current track (to restart from beginning), the renderer incorrectly skipped the auto-stop ("Same URI already active") and then ignored the Play ("Already playing"). The track continued playing instead of restarting. Removed the same-URI shortcut — SetAVTransportURI now always performs auto-stop, allowing the track to reopen from the beginning.
+
+---
+
 ## [2.1.8] - 2026-03-31
 
 ### Added

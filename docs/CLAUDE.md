@@ -429,13 +429,19 @@ sudo apt install build-essential libavformat-dev libavcodec-dev libavutil-dev li
 - [x] UAPP async Play — `onPlay` callback launched asynchronously for fast HTTP 200 response
 - [x] UAPP SCPD fix — added missing AbsTime/RelCount/AbsCount to GetPositionInfo SCPD declaration
 - [x] Minimal UPnP mode (`--minimal-upnp`) — disables position thread and event notifications
+- [x] Track restart fix — removed same-URI shortcut that prevented restarting track from beginning
+- [x] RENDERER_NAME configuration option
+- [x] Config variable alignment — `NAME`, `INTERFACE`, `MTU` (old names as fallback)
+- [x] AIFF support — added `aiff` demuxer + `pcm_s16be/s24be/s32be` decoders to FFmpeg build config
+- [x] CPU affinity (`--cpu-audio`, `--cpu-other`) — pin threads to dedicated cores via config/CLI/web UI
+- [x] Clang + LTO build support (PR #64 by sheviks) — `env LLVM=1 ./install.sh` or `make LLVM=1`
+- [x] EIO→EOF fix — treat EIO after successful reads as normal EOF (fixes 32-bit 768kHz playlist advancement)
 
 ### Potential Future Work
 - [ ] AVX-512 format conversions (currently only memcpy uses AVX-512)
 - [ ] Multi-producer ring buffer for multiple audio sources
 - [ ] Adaptive prefetch tuning based on cache behavior
 - [ ] Configurable buffer settings (PCM/DSD buffer seconds, prefill ms) via config file/CLI/web UI
-- [ ] CPU affinity / core isolation for audio threads
 
 ## Format Transition Handling
 

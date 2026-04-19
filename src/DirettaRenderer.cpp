@@ -16,16 +16,15 @@
 #include <functional>
 #include <unistd.h>
 #include <cstring>
+#include <pthread.h>
+#include <sched.h>
 
 // Logging: uses centralized LogLevel system from LogLevel.h (included via DirettaSync.h)
 // DEBUG_LOG kept as alias for backward compatibility within this file
 #define DEBUG_LOG(x) LOG_DEBUG(x)
 
-namespace {
-// F1: Worker thread priority elevation for reduced jitter
 // Sets SCHED_FIFO real-time priority (requires root on Linux)
-// Returns true on success, false on failure (logs warning but continues)
-bool setRealtimePriority(int priority = 50) {
+static bool setRealtimePriority(int priority = 51) {
     struct sched_param param;
     param.sched_priority = priority;
 
@@ -43,29 +42,20 @@ bool setRealtimePriority(int priority = 50) {
     }
     return true;
 }
-// F2: Audio thread core affinity
-// Sets core affinity (requires root on Linux)
-// Returns true on success, false on failure (logs warning but continues)
-bool setCpuAffinity(int audio_core_id = 3) {
+
+// Helper: pin current thread to a specific CPU core
+static bool pinThreadToCore(int core, const char* threadName) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(audio_core_id, &cpuset);
-
-    int ret = sched_setaffinity(gettid(), sizeof(cpuset), &cpuset);
+    CPU_SET(core, &cpuset);
+    int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
     if (ret != 0) {
-        // Not fatal - may not have CAP_SYS_NICE or running as non-root
-        if (g_verbose) {
-            std::cerr << "[Audio Thread] Warning: Could not set CPU affinity to core "
-                      << audio_core_id << " (error " << ret << ")" << std::endl;
-        }
+        std::cerr << "[" << threadName << "] Failed to set CPU affinity to core "
+                  << core << ": " << strerror(ret) << std::endl;
         return false;
     }
-    if (g_verbose) {
-        std::cout << "[Audio Thread] Audio thread set CPU affinity to core " << audio_core_id << std::endl;
-    }
+    std::cout << "[" << threadName << "] Pinned to CPU core " << core << std::endl;
     return true;
-}
-
 }
 
 //=============================================================================
@@ -207,6 +197,12 @@ bool DirettaRenderer::start(std::atomic<bool>* stopSignal) {
         if (m_config.targetProfileLimitTime >= 0)
             syncConfig.targetProfileLimitTime = static_cast<unsigned int>(m_config.targetProfileLimitTime);
 
+        // CPU affinity
+        if (m_config.cpuAudio >= 0)
+            syncConfig.cpuAudio = m_config.cpuAudio;
+        if (m_config.cpuOther >= 0)
+            syncConfig.cpuOther = m_config.cpuOther;
+
         // Log non-default SDK settings
         if (m_config.threadMode >= 0)
             std::cout << "[DirettaRenderer] Thread mode: " << syncConfig.threadMode << std::endl;
@@ -223,6 +219,10 @@ bool DirettaRenderer::start(std::atomic<bool>* stopSignal) {
         if (m_config.targetProfileLimitTime >= 0)
             std::cout << "[DirettaRenderer] Target profile limit: " << syncConfig.targetProfileLimitTime
                       << " us (" << (syncConfig.targetProfileLimitTime > 0 ? "TargetProfile" : "SelfProfile") << ")" << std::endl;
+        if (m_config.cpuAudio >= 0)
+            std::cout << "[DirettaRenderer] CPU audio (Diretta worker): core " << m_config.cpuAudio << std::endl;
+        if (m_config.cpuOther >= 0)
+            std::cout << "[DirettaRenderer] CPU other (decode/UPnP): core " << m_config.cpuOther << std::endl;
 
         if (!m_direttaSync->enable(syncConfig, stopSignal)) {
             std::cerr << "[DirettaRenderer] Failed to enable DirettaSync" << std::endl;
@@ -534,15 +534,6 @@ bool DirettaRenderer::start(std::atomic<bool>* stopSignal) {
             if (currentState == AudioEngine::State::PLAYING ||
                 currentState == AudioEngine::State::PAUSED) {
 
-                // Skip auto-stop if same URI already playing
-                // (control point confirming current track after gapless transition)
-                //if (uri == m_currentURI) {
-                //    DEBUG_LOG("[DirettaRenderer] Same URI already active, skipping auto-stop");
-                //    m_currentMetadata = metadata;
-                //    m_audioEngine->setCurrentURI(uri, metadata);
-                //    return;
-                //}
-
                 std::cout << "[DirettaRenderer] Auto-STOP before URI change" << std::endl;
 
                 // v2.0.1 FIX: Record stop time for DAC stabilization delay in onPlay
@@ -794,6 +785,7 @@ void DirettaRenderer::stop() {
 //=============================================================================
 
 void DirettaRenderer::upnpThreadFunc() {
+    if (m_config.cpuOther >= 0) pinThreadToCore(m_config.cpuOther, "UPnP Thread");
     DEBUG_LOG("[UPnP Thread] Started");
 
     while (m_running) {
@@ -804,16 +796,12 @@ void DirettaRenderer::upnpThreadFunc() {
 }
 
 void DirettaRenderer::audioThreadFunc() {
+    if (m_config.cpuDecode >= 0) {
+	    pinThreadToCore(m_config.cpuDecode, "Audio Thread");
+	    setRealtimePriority(51);
+    }
+	
     DEBUG_LOG("[Audio Thread] Started");
-    // F1: Elevate worker thread priority for reduced jitter
-    // SCHED_FIFO priority 50 (mid-range real-time) - requires root/CAP_SYS_NICE
-    if ( m_config.audioPrio >= 1 ) {
-		setRealtimePriority(m_config.audioPrio);
-    }
-    // F2: Set cpu affinity
-    if ( m_config.audioCore >= 0 ) {
-        setCpuAffinity(m_config.audioCore);
-    }
 
     // Buffer-level flow control thresholds (like MPD's Delay() approach)
     constexpr float BUFFER_HIGH_THRESHOLD = 0.5f;  // Throttle when >50% full
@@ -909,6 +897,7 @@ void DirettaRenderer::audioThreadFunc() {
 }
 
 void DirettaRenderer::positionThreadFunc() {
+    if (m_config.cpuOther >= 0) pinThreadToCore(m_config.cpuOther, "Position Thread");
     DEBUG_LOG("[Position Thread] Started");
 
     while (m_running) {
