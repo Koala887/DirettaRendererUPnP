@@ -44,7 +44,8 @@ public:
 
         // CPU affinity (-1 = no pinning, default)
         int cpuAudio = -1;        // Core for DirettaSync worker thread (critical hot path)
-        int cpuOther = -1;        // Core for other threads (UPnP, position, decode)
+        int cpuDecode = -1;        // Core for decode thread (decode)
+        int cpuOther = -1;        // Core for other threads (UPnP, position)
 
         Config();
     };
