@@ -1,4 +1,4 @@
-# Diretta UPnP Renderer v2.2.3
+# Diretta UPnP Renderer v2.4.3
 
 **The world's first native UPnP/DLNA renderer with Diretta protocol support - Low-Latency Edition**
 
@@ -8,20 +8,18 @@
 
 ---
 
-![Version](https://img.shields.io/badge/version-2.2.3-blue.svg)
+![Version](https://img.shields.io/badge/version-2.4.3-blue.svg)
 ![Low Latency](https://img.shields.io/badge/Latency-Low-green.svg)
 ![SDK](https://img.shields.io/badge/SDK-DIRETTA::Sync-orange.svg)
 ![Audirvana](https://img.shields.io/badge/Audirvana-Compatible-green.svg)
 
 ---
 
-## What's New in v2.2.3
+## What's New in v2.4.3
 
-**Complete CPU isolation, build system optimization, Web UI Stop button.**
+**FFmpeg 8 minimal build: better decoder performance.**
 
-- **Web UI Stop button** — Added a Stop button next to Save & Restart and Restart Only. Useful for users running DirettaRendererUPnP on their own Linux distributions to stop the service directly from the web UI (e.g., to release the Diretta target for another player or before maintenance). Includes a confirmation dialog.
-- **Full thread isolation** — Main thread and log drain thread are now pinned to `--cpu-other` core, ensuring all non-audio threads stay off the audio core. libupnp internal threads also inherit the affinity automatically via thread inheritance. (Reported by progman, confirmed by sheviks)
-- **LDFLAGS propagation & -O3 unified** (PR #65 by sheviks) — LDFLAGS now propagate `-O` and `-march` flags to the linker when LTO is enabled, ensuring architecture-specific optimizations (AVX2/AVX-512/Zen4/NEON) are fully applied during whole-program analysis. Also forces `lld` as the linker with Clang and unifies all C++ files to `-O3`.
+- **Dropped `--enable-small`, added `--enable-lto` in the FFmpeg 8 minimal build** (Issue #70 reported by sheviks) — the minimal FFmpeg 8.x configure flags in `install.sh` previously included `--enable-small`, which silently downgrades compiler optimization from `-O3` to `-Os` (GCC) / `-Oz` (Clang). With all the `--disable-everything` + selective `--enable-*` already trimming the build, that flag offered negligible size benefit while measurably hurting performance in the audio hot path (FLAC/AAC/PCM decoders, format conversions). Replaced with `--enable-lto` to align with the legacy/full FFmpeg build and give the decoders the same `-O3 + LTO` treatment. **Users who built FFmpeg via `install.sh` should recompile to benefit.**
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -29,6 +27,11 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 | Version | Highlights |
 |---------|-----------|
+| **v2.4.2** | Three-tier CPU affinity (`--cpu-decode`, Daniel/Koala887), `ProtectKernelTunables` IRQ-affinity fix, install.sh stop-before-replace |
+| **v2.4.1** | Minimal-flavor distribution for downstream distros, 2.5 GbE option, web UI fixes, README enrichment |
+| **v2.4.0** | Target network link tuning (Daniel/Koala887), IRQ affinity, SMT toggle, isolcpus documentation |
+| **v2.3.0** | Multi-core CPU affinity, configurable buffers, Audirvana internet radio fix (grajaw) |
+| **v2.2.3** | Complete CPU isolation, build system optimization, Web UI Stop button |
 | **v2.2.2** | Clang + LTO build support (sheviks), 32-bit 768kHz playlist fix (abase) |
 | **v2.2.1** | Larger PCM buffer for CDN resilience, FFmpeg detection fix (sheviks) |
 | **v2.2.0** | CPU affinity, AIFF support, MinimServer DSD transcoding fix |
@@ -320,6 +323,8 @@ Then follow the [Quick Start](#quick-start) instructions for a fresh installatio
 
 ## Quick Start
 
+> **Note for downstream distributors (GentooPlayer, AudioLinux, etc.)**: starting with v2.4.1, each GitHub Release ships **two source tarballs** — the standard one and a `*-minimal.tar.gz` variant. The minimal tarball uses a stripped-down web UI profile that exposes only application-level configuration (target, name, port, interface, gapless, CPU affinity, buffer sizes, RT priority, Diretta SDK options). Wrapper-level system tuning (SMT toggle, NIC link tuning via `ethtool`, IRQ affinity, nice/ionice) is removed — distributions that already manage those concerns through their own framework can pick the minimal tarball and avoid configuration overlap with no packaging-side modification. The standard tarball remains the default for self-install on a generic Linux distribution.
+
 ### 1. Install Dependencies
 
 **Fedora:**
@@ -479,6 +484,76 @@ DSD conversion mode is selected once per track for optimal performance:
 | PCM Prefill | 50ms | 30ms | Faster start |
 | Flow Control | 10ms sleep | 500µs wait | 96% less jitter |
 
+### Buffer Pipeline
+
+An audio sample travels through several stages between the upstream HTTP source and the Diretta target. Knowing where each buffer sits helps decide what to tune when something misbehaves.
+
+```
+                  Network (Audirvana, Roon, slim2UPnP, Qobuz/Tidal CDN…)
+                                       │
+                                       │  TCP (HTTP)
+                                       ▼
+   ┌───────────────────────────────────────────────────────────────────┐
+   │ HOST (DirettaRendererUPnP)                                        │
+   │                                                                   │
+   │  ┌──────────────────────────────────────────────────────────┐     │
+   │  │ ① Kernel socket receive buffer                           │     │
+   │  │    net.core.rmem_max = 16 MB (sysctl, global ceiling)    │     │
+   │  └─────────────────────────┬────────────────────────────────┘     │
+   │                            ▼                                      │
+   │  ┌──────────────────────────────────────────────────────────┐     │
+   │  │ ② FFmpeg AVIO buffer (per open stream)                   │     │
+   │  │    256 KB (LAN) / 512 KB (Internet)                      │     │
+   │  └─────────────────────────┬────────────────────────────────┘     │
+   │                            ▼  demux + decode                     │
+   │  ┌──────────────────────────────────────────────────────────┐     │
+   │  │ ③ Internal PCM FIFO                                      │     │
+   │  │    AVAudioFifo ~7K samples (resampler overflow / bypass) │     │
+   │  └─────────────────────────┬────────────────────────────────┘     │
+   │                            ▼  SIMD format conversion             │
+   │  ┌──────────────────────────────────────────────────────────┐     │
+   │  │ ④ DirettaRingBuffer (lock-free SPSC, the main buffer)    │     │
+   │  │    PCM local  : 0.5 s   (PCM_BUFFER_SECONDS)             │     │
+   │  │    PCM remote : 1.0 s   (PCM_REMOTE_BUFFER_SECONDS)      │     │
+   │  │    DSD        : 0.8 s   (DSD_BUFFER_SECONDS)             │     │
+   │  │    Prefill    : 80-200 ms before playback starts         │     │
+   │  └─────────────────────────┬────────────────────────────────┘     │
+   │                            ▼  getNewStream() SDK callback        │
+   │  ┌──────────────────────────────────────────────────────────┐     │
+   │  │ ⑤ Diretta SDK send queue (proprietary)                   │     │
+   │  │    MTU-sized packets, managed by DIRETTA::Sync           │     │
+   │  └─────────────────────────┬────────────────────────────────┘     │
+   │                            ▼                                      │
+   │  ┌──────────────────────────────────────────────────────────┐     │
+   │  │ ⑥ Kernel socket send buffer                              │     │
+   │  │    net.core.wmem_max = 16 MB (sysctl, global ceiling)    │     │
+   │  └─────────────────────────┬────────────────────────────────┘     │
+   └────────────────────────────┼──────────────────────────────────────┘
+                                │  Diretta protocol (UDP, MTU 1500-9000)
+                                ▼
+                       Diretta TARGET → DAC
+```
+
+**Role of each stage:**
+
+- **① Kernel RX socket** — absorbs network jitter on input. The `net.core.rmem_max=16 MB` sysctl is just a *ceiling*; each socket chooses how much it actually requests. Most useful for Internet streaming (Qobuz / Tidal CDN jitter).
+- **② FFmpeg AVIO** — feeds the demuxer. Larger for Internet (CDN jitter), smaller for LAN.
+- **③ PCM FIFO** — local buffer between decoder/resampler output and final format. Small, just to handle block-size mismatches.
+- **④ DirettaRingBuffer** — **the main buffer**, this is what determines audible latency and underrun resilience. The only one an audiophile actually tunes.
+- **⑤ Diretta SDK send queue** — internal to `DIRETTA::Sync`, MTU-sized packets ready to send. Not configurable from DRUP.
+- **⑥ Kernel TX socket** — symmetric to ①, ceiling for outbound UDP.
+
+**What to tune when:**
+
+| Symptom | Action |
+|---------|--------|
+| Drops on Internet radio / Qobuz / Tidal | Raise `PCM_REMOTE_BUFFER_SECONDS` (default 1.0 s → 2-3 s) and `PCM_REMOTE_PREFILL_MS` |
+| Too long a delay before sound starts | Reduce `PCM_PREFILL_MS` (default 80 ms) |
+| Underruns at DSD512+ | Raise `DSD_BUFFER_SECONDS` (default 0.8 s) |
+| 16 MB sysctl (`rmem_max` / `wmem_max`) | Generic, set once via `install.sh` and forget |
+
+The buffer at stage ④ (`DirettaRingBuffer`) is what really matters for the audiophile experience. Everything else either self-regulates or gets set once and left alone.
+
 ### SIMD Throughput
 
 | Conversion | Function | Throughput |
@@ -494,19 +569,32 @@ For the best possible audio quality, the following system-level optimizations ar
 
 #### CPU Affinity (v2.2.0+)
 
-Pinning audio threads to dedicated CPU cores reduces jitter and improves soundstage clarity:
+Pinning audio threads to dedicated CPU cores reduces jitter and improves soundstage clarity. Three granularities are available, each accepting a single core or a comma-separated list:
 
 ```ini
 # In /etc/default/diretta-renderer
-CPU_AUDIO=2    # Diretta worker thread (critical hot path)
-CPU_OTHER=3    # Decode, UPnP, and other threads
+CPU_AUDIO=2    # Diretta SDK worker thread (critical hot path)
+CPU_DECODE=3   # Renderer audio thread: HTTP receive + FFmpeg decode (v2.4.2+)
+CPU_OTHER=4    # main, UPnP, position, log drain
 ```
+
+When `CPU_DECODE` is set (v2.4.2+), the audio thread is also raised to `SCHED_FIFO` real-time priority — the dedicated core makes that safe. If `CPU_DECODE` is left empty, the audio thread inherits `CPU_OTHER` as before, preserving v2.4.1 behaviour.
 
 Use cores on the same CCD (AMD) or same P-core cluster (Intel) and avoid core 0 (used by kernel/interrupts). Also configurable via the web UI under "CPU Affinity".
 
 #### Disable SMT (Hyperthreading)
 
-Simultaneous Multithreading (SMT/HT) shares physical core resources between two logical threads, which can introduce micro-jitter on the audio path. Disabling SMT ensures each core is fully dedicated:
+Simultaneous Multithreading (SMT/HT) shares physical core resources between two logical threads, which can introduce micro-jitter on the audio path. Disabling SMT ensures each core is fully dedicated.
+
+**Via DirettaRendererUPnP (v2.4.0+, recommended)** — set in the web UI under **CPU Affinity → SMT**, or in `/etc/default/diretta-renderer`:
+
+```ini
+SMT=off          # or "on", "forceoff", or empty for "no change"
+```
+
+The wrapper re-applies this on every service start, so the setting survives service restarts. Note that toggling SMT changes the logical-CPU numbering — if you also use `CPU_AUDIO` / `CPU_OTHER`, make sure those values reference logical CPUs that exist in the chosen state (e.g. a 12-core CPU exposes CPUs 0-23 with SMT on, 0-11 with SMT off).
+
+**Manual one-shot equivalent**:
 
 ```bash
 # Disable SMT (temporary, until reboot)
@@ -516,7 +604,56 @@ echo off | sudo tee /sys/devices/system/cpu/smt/control
 cat /sys/devices/system/cpu/smt/active   # Should show "0"
 ```
 
-For a permanent setting, add `nosmt` to your kernel boot parameters (in `/etc/default/grub`, then run `grub2-mkconfig`).
+**Permanent across reboots** — add `nosmt` to your kernel cmdline (in `/etc/default/grub`, then run `grub2-mkconfig`). This bypasses the BIOS default at boot and is the most robust option for a dedicated audio machine.
+
+#### Reduce disk activity during playback (hybrid tmpfs)
+
+Even on a tuned system, residual disk I/O happens at idle: `journald` flushing logs, `/var/tmp` writes, atime updates, etc. Each disk write triggers SSD/NVMe controller activity, which some users perceive as a residual bruit on sensitive setups. Moving log/temp paths to RAM (tmpfs) eliminates this.
+
+> **Skip this if you run on GentooPlayer, AudioLinux, or any other audiophile-tuned distribution** — those already manage filesystem layout for low I/O. This guidance is for self-installs on Fedora, Ubuntu, Debian, Arch, etc.
+
+**Step 1 — make journald volatile (essential, no fstab edit needed):**
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/audiophile.conf > /dev/null <<'EOF'
+[Journal]
+Storage=volatile
+RuntimeMaxUse=64M
+ForwardToSyslog=no
+EOF
+sudo rm -rf /var/log/journal/*   # clear stale on-disk journals
+sudo systemctl restart systemd-journald
+```
+
+After this, all logs live in `/run/log/journal/` (already a tmpfs) and are cleared on reboot. Verify with `ls -la /run/log/journal/<machine-id>/` — `.journal` files should be there, while `/var/log/journal/` is empty.
+
+**Step 2 — optional `/var/log` and `/var/tmp` in tmpfs**, for the few apps that don't use journald:
+
+Add to `/etc/fstab` (back it up first with `sudo cp /etc/fstab /etc/fstab.bak`):
+
+```
+tmpfs   /var/log    tmpfs   defaults,noatime,size=512M,mode=0755    0 0
+tmpfs   /var/tmp    tmpfs   defaults,noatime,size=1G,mode=1777      0 0
+```
+
+Reboot to apply. Note: `/tmp` is already a tmpfs by default on modern Fedora and many other distros.
+
+**Verification — measure disk activity during playback:**
+
+```bash
+iostat -x 2 5
+```
+
+After the first iteration (which shows historical averages since boot), the next iterations should show `r/s` and `w/s` very close to 0 on your audio machine while music is playing.
+
+**Revert:**
+
+```bash
+sudo rm /etc/systemd/journald.conf.d/audiophile.conf
+sudo cp /etc/fstab.bak /etc/fstab    # if you edited fstab
+sudo reboot
+```
 
 #### Minimal UPnP Mode (v2.1.8+)
 
@@ -608,6 +745,20 @@ sudo sysctl -w net.core.wmem_max=16777216
 
 ### CPU Isolation & Tuning (Advanced)
 
+> ⚠️ **Heads-up — the tuner scripts predate DirettaRendererUPnP's native
+> CPU affinity (v2.2.0) and IRQ affinity (v2.4.0) features.** For most
+> users, configuring `CPU_AUDIO` / `CPU_OTHER` / `IRQ_INTERFACE` /
+> `IRQ_CPUS` via the web UI, plus the **Manual Setup** walkthrough below,
+> is simpler and avoids overlap. In particular, the tuner's post-start
+> thread distribution applies `taskset` round-robin to the renderer's
+> threads after launch, which **overrides** the per-thread pinning DRUP
+> performs natively. If you set `CPU_AUDIO=8` and then run the tuner, the
+> tuner will move the audio worker off CPU 8 to a different core. The
+> tuner scripts are kept for users who want a one-shot system-level
+> configuration on machines that aren't using the in-DRUP CPU affinity
+> options, but the **Manual Setup (Alternative to Tuner Scripts)** below
+> is the recommended path going forward.
+
 For maximum audio quality, you can isolate CPU cores for the renderer using the included tuner scripts. This prevents system tasks from interrupting audio processing.
 
 **Features:**
@@ -670,6 +821,73 @@ sudo ./diretta-renderer-tuner.sh revert
 | **Without SMT** | Physical cores only | Best | Dedicated audio machine |
 
 For a dedicated audio server, **nosmt** mode provides more consistent latency because each core has no resource contention from SMT siblings.
+
+#### Manual Setup (Alternative to Tuner Scripts)
+
+If you prefer to apply isolation by hand — for instance on appliance distros
+where the tuner scripts don't fit (GentooPlayer, AudioLinux), or to keep
+control over the exact cmdline — the following is the minimum viable recipe.
+
+**1. Pick the CPU you want dedicated to the Diretta worker.** This will be
+the same value you'll pass to `--cpu-audio`. On a Ryzen 9 5900X with SMT
+disabled, picking `8` (a CCD 1 core, away from CPU 0) is a common choice.
+
+**2. Add this to the kernel cmdline:**
+
+```
+isolcpus=8 nohz_full=8 rcu_nocbs=8
+```
+
+- `isolcpus=8` — removes CPU 8 from the general scheduler load balancer.
+- `nohz_full=8` — disables the periodic scheduler tick on CPU 8 when only
+  one task is running (i.e. the Diretta worker), eliminating one more
+  source of jitter.
+- `rcu_nocbs=8` — moves RCU callback handling off CPU 8.
+
+**3. Apply via your bootloader and reboot.**
+
+For GRUB (most distros — Fedora, Ubuntu, Debian, Arch):
+
+```bash
+# Edit /etc/default/grub and append the three params to GRUB_CMDLINE_LINUX_DEFAULT
+sudo nano /etc/default/grub
+
+# Regenerate the bootloader config (pick the line for your distro):
+sudo grub2-mkconfig -o /boot/grub2/grub.cfg     # Fedora/RHEL/CentOS
+sudo update-grub                                # Ubuntu/Debian
+sudo grub-mkconfig -o /boot/grub/grub.cfg       # Arch
+
+sudo reboot
+```
+
+**4. Verify after reboot:**
+
+```bash
+cat /proc/cmdline                       # confirm the three params are present
+cat /sys/devices/system/cpu/isolated    # should show: 8
+```
+
+**5. Tell DirettaRendererUPnP to use that core.** In the web UI (or
+`/etc/default/diretta-renderer`):
+
+```bash
+CPU_AUDIO=8           # pin Diretta worker to the isolated CPU
+CPU_OTHER=10,11       # decode/UPnP/position threads on neighbouring cores
+IRQ_INTERFACE=enp4s0  # NIC name (whichever talks to the target)
+IRQ_CPUS=0-5          # push NIC interrupts AWAY from CPU 8
+```
+
+**Caveats:**
+- A typo in the cmdline can prevent boot — if that happens, edit the cmdline
+  at the GRUB menu (press `e`) to recover, then fix `/etc/default/grub`.
+- Don't isolate every core. The kernel still needs CPUs to run system tasks.
+  On a 12-core CPU, isolating 1–2 cores is the usual sweet spot.
+- `isolcpus=` only *removes* the core from the default scheduler. The core
+  becomes useful for audio only once you also pin DRUP to it via
+  `--cpu-audio` / `CPU_AUDIO`.
+
+For systemd-boot setups, additional bootloader recipes, and recovery
+guidance, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md#3-cpu-isolation-with-isolcpus-kernel-boot-parameter).
 
 ---
 
@@ -868,4 +1086,4 @@ This software is provided "as is" without warranty. While designed for high-qual
 
 **Enjoy bit-perfect, low-latency audio streaming!**
 
-*Last updated: 2026-04-18 (v2.2.3)*
+*Last updated: 2026-05-11 (v2.4.3)*
