@@ -199,7 +199,7 @@ install_ffmpeg_build_deps() {
 # Common FFmpeg configure options for audio-only build (legacy/full version)
 get_ffmpeg_configure_opts() {
     cat <<'OPTS'
---prefix=/usr/local
+--prefix=/usr
 --disable-debug
 --enable-shared
 --disable-stripping
@@ -1237,7 +1237,7 @@ DSD_PREFILL_MS="${DSD_PREFILL_MS:-}"
 NICE_LEVEL="${NICE_LEVEL:--10}"
 IO_SCHED_CLASS="${IO_SCHED_CLASS:-realtime}"
 IO_SCHED_PRIORITY="${IO_SCHED_PRIORITY:-0}"
-RT_PRIORITY="${RT_PRIORITY:-50}"
+RT_PRIORITY="${RT_PRIORITY:-80}"
 
 # Advanced network config
 TARGET_INTERFACE="${TARGET_INTERFACE:-}"
@@ -1591,8 +1591,15 @@ SyslogIdentifier=diretta-renderer
 # --- Capabilities ---
 # CAP_NET_RAW/CAP_NET_ADMIN: needed for Diretta raw sockets
 # CAP_SYS_NICE: needed for real-time thread priority (SCHED_FIFO)
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_NICE
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_NICE
+# CAP_IPC_LOCK: needed for mlockall(MCL_CURRENT|MCL_FUTURE) at startup
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_NICE CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_NICE CAP_IPC_LOCK
+
+# --- Resource limits ---
+# Unlimited memory locking so mlockall() can pin all current + future
+# process pages in RAM (no swap / no page-cache eviction / no page faults
+# on the audio path). Pairs with CAP_IPC_LOCK above.
+LimitMEMLOCK=infinity
 
 # --- Filesystem isolation ---
 ProtectSystem=strict

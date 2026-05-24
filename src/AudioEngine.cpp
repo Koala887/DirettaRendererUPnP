@@ -95,6 +95,7 @@ AudioDecoder::~AudioDecoder() {
 
 bool AudioDecoder::open(const std::string& url) {
     std::cout << "[AudioDecoder] Opening: " << url.substr(0, 80) << "..." << std::endl;
+    m_decodeError = false;
 
     // Open input file
     m_formatContext = avformat_alloc_context();
@@ -676,6 +677,28 @@ bool AudioDecoder::open(const std::string& url) {
         realBitDepth = 24;
     }
 
+    // Lossy codecs (AAC, MP3, Vorbis, Opus, AC-3, WMA, ...) are decoded by
+    // FFmpeg into float (FLT/FLTP), which the detection above maps to 32-bit.
+    // That float is FFmpeg's internal calculation buffer, NOT a real 32-bit
+    // source: a 192 kbps AAC web radio has far fewer than 16 effective bits.
+    // Reporting 32-bit makes configureSinkPCM() negotiate FMT_PCM_SIGNED_32
+    // with the sink; DACs that advertise 32-bit at the Diretta target level
+    // but are physically limited to 24-bit (e.g. TEAC UD-701N) then play
+    // silence/noise. Cap lossy sources at 24-bit — transparent, since their
+    // effective resolution is well below 24-bit and every DAC accepts 24-bit.
+    // Lossless codecs (FLAC/ALAC/PCM) are left untouched so genuine 24/32-bit
+    // files still negotiate their real depth.
+    const AVCodecDescriptor* codecDesc = avcodec_descriptor_get(codecpar->codec_id);
+    if (codecDesc &&
+        (codecDesc->props & AV_CODEC_PROP_LOSSY) &&
+        !(codecDesc->props & AV_CODEC_PROP_LOSSLESS) &&
+        realBitDepth > 24) {
+        DEBUG_LOG("[AudioDecoder] Lossy codec (" << codecDesc->name
+                  << ") detected as " << realBitDepth
+                  << "-bit (FFmpeg float decode buffer) - capping to 24-bit");
+        realBitDepth = 24;
+    }
+
     m_trackInfo.bitDepth = realBitDepth;
 
     // Detect S24 alignment hint for 24-bit content
@@ -706,6 +729,20 @@ bool AudioDecoder::open(const std::string& url) {
                  m_codecContext->sample_fmt == AV_SAMPLE_FMT_S32P) {
             m_trackInfo.s24Alignment = TrackInfo::S24Alignment::MsbAligned;
             DEBUG_LOG("[AudioDecoder] S24 hint: MSB-aligned (S32 format)");
+        }
+        // Lossy codecs (AAC/MP3/Vorbis/Opus/AC-3/WMA), capped to 24-bit by the
+        // AV_CODEC_PROP_LOSSY block above, decode as float (FLT/FLTP) but the
+        // resampler converts that to AV_SAMPLE_FMT_S32 — so the 24-bit data
+        // sits in the upper 24 bits of S32, MSB-aligned. Without this hint the
+        // ring buffer auto-detects on first push and can pick LsbAligned on
+        // dynamic/silent content, producing white noise on 24-bit-only DACs
+        // (companion to the v2.4.4 sink-negotiation cap; reported by Laurent
+        // for France Musique AAC on TEAC UD-701N via JPLAY iOS).
+        else if (codecDesc &&
+                 (codecDesc->props & AV_CODEC_PROP_LOSSY) &&
+                 !(codecDesc->props & AV_CODEC_PROP_LOSSLESS)) {
+            m_trackInfo.s24Alignment = TrackInfo::S24Alignment::MsbAligned;
+            DEBUG_LOG("[AudioDecoder] S24 hint: MSB-aligned (lossy codec via S32 resampler)");
         }
     }
 
@@ -1357,6 +1394,8 @@ size_t AudioDecoder::readSamples(AudioBuffer& buffer, size_t numSamples,
             } else if (ret < 0) {
                 std::cerr << "[AudioDecoder] Error receiving frame from decoder" << std::endl;
                 av_frame_unref(m_frame);
+                // Set even when totalSamplesRead > 0 (error after partial read), unlike m_eof.
+                m_decodeError = true;
                 return totalSamplesRead;
             }
 
@@ -2148,6 +2187,28 @@ bool AudioEngine::process(size_t samplesNeeded) {
         }
 
         m_samplesPlayed += samplesRead;
+    }
+
+    // Check before samplesRead == 0: error can occur after a partial read (samplesRead > 0).
+    if (m_currentDecoder && m_currentDecoder->hasDecodeError()) {
+        std::cerr << "[AudioEngine] Fatal decoder error (corrupt packet), triggering clean stop" << std::endl;
+        m_silenceCount = 0;
+        m_isDraining = false;
+        if (m_preloadRunning.load(std::memory_order_acquire)) {
+            lock.unlock();
+            waitForPreloadThread();
+            lock.lock();
+        }
+        m_nextDecoder.reset();
+        m_nextURI.clear();
+        m_nextMetadata.clear();
+        m_formatChangePending = false;
+        m_currentDecoder.reset();
+        m_state = State::STOPPED;
+        if (m_trackEndCallback) {
+            m_trackEndCallback();
+        }
+        return false;
     }
 
     // Check for actual end of data (no more samples can be read)

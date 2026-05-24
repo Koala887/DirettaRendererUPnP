@@ -1,4 +1,4 @@
-# Diretta UPnP Renderer v2.4.3
+# Diretta UPnP Renderer v2.5.0
 
 **The world's first native UPnP/DLNA renderer with Diretta protocol support - Low-Latency Edition**
 
@@ -8,18 +8,18 @@
 
 ---
 
-![Version](https://img.shields.io/badge/version-2.4.3-blue.svg)
+![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)
 ![Low Latency](https://img.shields.io/badge/Latency-Low-green.svg)
 ![SDK](https://img.shields.io/badge/SDK-DIRETTA::Sync-orange.svg)
 ![Audirvana](https://img.shields.io/badge/Audirvana-Compatible-green.svg)
 
 ---
 
-## What's New in v2.4.3
+## What's New in v2.5.0
 
-**FFmpeg 8 minimal build: better decoder performance.**
+**`mlockall` at startup — the last non-deterministic stall source closed.**
 
-- **Dropped `--enable-small`, added `--enable-lto` in the FFmpeg 8 minimal build** (Issue #70 reported by sheviks) — the minimal FFmpeg 8.x configure flags in `install.sh` previously included `--enable-small`, which silently downgrades compiler optimization from `-O3` to `-Os` (GCC) / `-Oz` (Clang). With all the `--disable-everything` + selective `--enable-*` already trimming the build, that flag offered negligible size benefit while measurably hurting performance in the audio hot path (FLAC/AAC/PCM decoders, format conversions). Replaced with `--enable-lto` to align with the legacy/full FFmpeg build and give the decoders the same `-O3 + LTO` treatment. **Users who built FFmpeg via `install.sh` should recompile to benefit.**
+- **Memory locked in RAM** (`mlockall(MCL_CURRENT | MCL_FUTURE)`): early in `main()`, just before any thread is created, all of the renderer's pages — code, heap, stack, and every page allocated thereafter — are pinned into RAM for the lifetime of the binary. No page of DRUP can be swapped out, evicted from the page cache, or trigger a major/minor page fault that would otherwise stall the audio thread despite SCHED_FIFO + CPU pinning + isolcpus. Same memory-locking discipline JACK and PipeWire perform in RT mode, and the last ingredient closing the gap between the userspace audio path and a fully deterministic CONFIG_PREEMPT_RT + isolated-CPU host. Permissions: `CAP_IPC_LOCK` is now in the unit's `AmbientCapabilities` + `CapabilityBoundingSet`, and `LimitMEMLOCK=infinity` is set — both ship with the v2.5.0 service file. On `EPERM` (e.g. CLI run without privileges) a `LOG_WARN` is emitted and the binary continues; no behavioural change otherwise. The "Memory locked in RAM (mlockall MCL_CURRENT|MCL_FUTURE)" line is visible in the journal on every successful startup. RSS becomes a hard floor for the process — on this binary that's a few MiB, entirely negligible on any host running DRUP.
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -27,6 +27,8 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 | Version | Highlights |
 |---------|-----------|
+| **v2.4.5** | Lossy radio (AAC/MP3) S24 alignment fix on 24-bit-only DACs, zombie-state cleanup on corrupt PCM packets (hoorna/Alfred) |
+| **v2.4.3** | FFmpeg 8 minimal build: drop `--enable-small`, add `--enable-lto` (Issue #70, sheviks) |
 | **v2.4.2** | Three-tier CPU affinity (`--cpu-decode`, Daniel/Koala887), `ProtectKernelTunables` IRQ-affinity fix, install.sh stop-before-replace |
 | **v2.4.1** | Minimal-flavor distribution for downstream distros, 2.5 GbE option, web UI fixes, README enrichment |
 | **v2.4.0** | Target network link tuning (Daniel/Koala887), IRQ affinity, SMT toggle, isolcpus documentation |
@@ -736,6 +738,19 @@ echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governo
 sudo setcap cap_sys_nice+ep ./bin/DirettaRendererUPnP
 ```
 
+### Memory Locking (mlockall)
+
+As of **v2.5.0**, the binary calls `mlockall(MCL_CURRENT | MCL_FUTURE)` at startup so no page of the process can be swapped out, evicted from the page cache, or page-fault on the audio path. Same memory-locking discipline JACK and PipeWire use in RT mode. On success the journal shows `Memory locked in RAM (mlockall MCL_CURRENT|MCL_FUTURE)`.
+
+**Running as root** (the default for the shipped systemd unit): works out of the box — root has `CAP_IPC_LOCK`, which makes `RLIMIT_MEMLOCK` irrelevant.
+
+**Other deployments — non-root user, custom init system, or restricted launcher** (downstream packagers please note): grant `CAP_IPC_LOCK` and raise the memory-lock limit.
+
+- **systemd** (e.g. AudioLinux, generic distros): set `LimitMEMLOCK=infinity` and add `CAP_IPC_LOCK` to `AmbientCapabilities` (and to `CapabilityBoundingSet` if you restrict the bounding set). The unit shipped with this repo does both already.
+- **OpenRC** (e.g. GentooPlayer): set `rc_ulimit="-l unlimited"` for the memory-lock limit; for the capability, either run as root, `setcap cap_ipc_lock+ep ./bin/DirettaRendererUPnP`, or `start-stop-daemon --capabilities CAP_IPC_LOCK ...`.
+
+On `EPERM` (e.g. CLI run as an unprivileged user without setcap), the binary emits a `LOG_WARN` and continues with no behavioural regression versus earlier releases — only the memory-locking benefit is lost.
+
 ### Network Tuning
 ```bash
 # Increase network buffers
@@ -1086,4 +1101,4 @@ This software is provided "as is" without warranty. While designed for high-qual
 
 **Enjoy bit-perfect, low-latency audio streaming!**
 
-*Last updated: 2026-05-11 (v2.4.3)*
+*Last updated: 2026-05-23 (v2.5.0)*

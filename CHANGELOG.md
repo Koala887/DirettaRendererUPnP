@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.5.0] - 2026-05-23
+
+### Added
+- **`mlockall` at startup**: DRUP now calls `mlockall(MCL_CURRENT | MCL_FUTURE)` early in `main()`, just after the CPU-affinity validation block and before the main thread is pinned / any worker is spawned. All of the process's pages — code, heap, stack, and every page allocated thereafter — are locked into RAM for the lifetime of the binary. No page of DRUP can be swapped out, evicted from the page cache, or trigger a major/minor page fault that would otherwise stall the audio thread despite SCHED_FIFO + CPU pinning + isolcpus. This is the same memory-locking discipline JACK and PipeWire perform in RT mode, and it closes the last non-deterministic source of stalls (memory pressure / cache reclaim) for a CONFIG_PREEMPT_RT + isolated-CPU host. On `EPERM` (e.g. CLI run without privileges), a `LOG_WARN` is emitted and the binary continues; no behavioural change otherwise. The "Memory locked in RAM (mlockall MCL_CURRENT|MCL_FUTURE)" line is visible in the journal on every successful startup. RSS becomes a hard floor for the process — on this binary that's a few MiB and entirely negligible on any host running DRUP.
+
+### Changed
+- **`systemd/diretta-renderer.service`**: added `CAP_IPC_LOCK` to both `AmbientCapabilities` and `CapabilityBoundingSet`, and added `LimitMEMLOCK=infinity`. Without these, `mlockall` would fail with `EPERM` even though the unit runs as root — `CapabilityBoundingSet` strips any capability not listed (the user-supplied root identity does not grant capabilities that are bounded out), and `LimitMEMLOCK` is checked before `CAP_IPC_LOCK` allows it to be ignored. Comment block reorganised to explain each capability and the new resource-limit section. New installs (and any user copying `systemd/diretta-renderer.service` to `/etc/systemd/system/` over an existing unit) will pick this up automatically; users running an older locally-modified unit need to merge in these lines and `systemctl daemon-reload`.
+
+## [2.4.5] - 2026-05-20
+
+### Fixed
+- **Lossy radio (AAC/MP3) white noise on 24-bit-limited DACs — S24 alignment** (companion to the v2.4.4 sink cap, reported by Laurent for France Musique AAC via JPLAY iOS on a TEAC UD-701N): the v2.4.4 cap fixed the sink negotiation (DRUP correctly asks for 24-bit) but the `s24Alignment` hint was still left as `Unknown` for lossy codecs — their decoder output is `AV_SAMPLE_FMT_FLTP` (float), which matches none of the three pre-existing branches (`PCM_S24LE/BE`, `FLAC/ALAC`, `sample_fmt == S32/S32P`). With the hint missing, `DirettaRingBuffer` had to auto-detect alignment on the first push and could pick `LsbAligned` on dynamic/silent content, producing white noise on 24-bit-only DACs. The resampler always converts a 24-bit lossy stream to `AV_SAMPLE_FMT_S32` (data in the upper 24 bits = MSB-aligned), so a 4th branch now marks such codecs as `MsbAligned` explicitly, using the same `AV_CODEC_PROP_LOSSY` codec-descriptor check as the v2.4.4 cap.
+- **Renderer zombie state on corrupt PCM packet from radio stream**: A corrupt packet mid-stream caused `avcodec_receive_frame()` to return an error after some samples had already been decoded in the same `readSamples()` call. Because the error check was guarded by `samplesRead == 0`, it was silently skipped, leaving the decoder flagged as failed while the renderer kept running — producing silence and ignoring all subsequent UPnP commands. The fix moves the decode-error check before the `samplesRead == 0` guard so it fires regardless of partial reads. On detection, the preload thread is joined, next-track state (`m_nextDecoder`, `m_nextURI`, `m_nextMetadata`, `m_formatChangePending`) is cleared, and `m_state` is set to `STOPPED` before firing `m_trackEndCallback()` — mirroring the normal EOF teardown's state-then-callback ordering (intentionally without the end-of-track drain delay, since a corrupt packet is not a clean end), so the UPnP controller (including Roon) sees the correct state before transitioning. (PR #72 by hoorna/Alfred)
+
+---
+
+## [2.4.4] - 2026-05-16
+
+### Fixed
+- **Lossy radio streams (AAC/MP3) silent on 24-bit-limited DACs** (reported by Dominique for a friend's TEAC UD-701N on AudioLinux): FFmpeg decodes lossy codecs (AAC, MP3, Vorbis, Opus, AC-3, WMA…) into a float buffer (`FLT`/`FLTP`), which the bit-depth detection in `AudioEngine.cpp` mapped to 32-bit. That float is FFmpeg's internal calculation format, not a real 32-bit source — a 192 kbps AAC web radio (e.g. France Musique `francemusique-hifi.aac`) has far fewer than 16 effective bits. The bogus 32-bit value made `configureSinkPCM()` negotiate `FMT_PCM_SIGNED_32` with the sink; DACs that advertise 32-bit at the Diretta target level but are physically limited to 24-bit (e.g. TEAC UD-701N) then played silence or noise. Lossy codecs are now capped at 24-bit (transparent — their effective resolution is well below 24-bit, and every DAC accepts 24-bit). Lossless codecs (FLAC/ALAC/PCM) are identified via FFmpeg's codec descriptor props (`AV_CODEC_PROP_LOSSY` without `AV_CODEC_PROP_LOSSLESS`) and left untouched, so genuine 24/32-bit files still negotiate their real depth.
+
+---
+
 ## [2.4.3] - 2026-05-11
 
 ### Changed
